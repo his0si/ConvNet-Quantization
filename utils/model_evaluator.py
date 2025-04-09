@@ -2,6 +2,7 @@ import torch
 import time
 import numpy as np
 from tqdm import tqdm
+import torchvision
 
 class ModelEvaluator:
     """
@@ -9,9 +10,7 @@ class ModelEvaluator:
     """
     def __init__(self, test_loader):
         self.test_loader = test_loader
-        # GPU 환경에서 실행하려면 아래 줄을 수정하세요
-        self.device = torch.device("cpu")  # CPU 기반 평가
-        #self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # GPU 사용
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     def evaluate_accuracy(self, model, verbose=True):
         """
@@ -60,24 +59,31 @@ class ModelEvaluator:
                 
                 # 예측 결과 계산
                 _, predicted = torch.max(output.data, 1)
-                c = (predicted == target).squeeze()
                 
+                # 각 클래스별로 정확도 계산
                 for i in range(len(target)):
                     label = target[i]
-                    class_correct[label] += c[i].item()
+                    class_correct[label] += (predicted[i] == label).item()
                     class_total[label] += 1
         
-        # 클래스별 정확도 계산
+        # 클래스별 정확도 계산 및 정렬
         class_accuracies = {}
-        if verbose:
-            print('\n클래스별 정확도:')
         for i in range(len(classes)):
-            accuracy = 100 * class_correct[i] / class_total[i]
-            class_accuracies[classes[i]] = accuracy
-            if verbose:
-                print(f'{classes[i]}: {accuracy:.2f}%')
+            if class_total[i] > 0:  # 해당 클래스의 샘플이 있는 경우에만 계산
+                accuracy = 100 * class_correct[i] / class_total[i]
+                class_accuracies[classes[i]] = accuracy
         
-        return class_accuracies
+        # 정확도 기준으로 정렬
+        sorted_accuracies = dict(sorted(class_accuracies.items(), key=lambda x: x[1], reverse=True))
+        
+        if verbose:
+            print('\n클래스별 정확도 (상위 20개 클래스):')
+            for i, (class_name, accuracy) in enumerate(sorted_accuracies.items()):
+                if i >= 20:
+                    break
+                print(f'{class_name}: {accuracy:.2f}%')
+        
+        return sorted_accuracies
     
     def compare_models(self, models_dict, classes):
         """
@@ -106,19 +112,18 @@ class ModelEvaluator:
 # 테스트 함수
 def test_evaluator():
     from utils.dataset_manager import DatasetManager
-    from models.baseline_model import create_model
     
     # 데이터셋 로드
     dataset_manager = DatasetManager()
-    _, test_loader, _ = dataset_manager.get_cifar10_dataset(batch_size=64)
+    test_loader = dataset_manager.get_imagenet_dataset()
     
     # 평가기 생성
     evaluator = ModelEvaluator(test_loader)
     
     # 테스트용 모델 생성
-    model = create_model()
+    model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V1)
     
-    # 정확도 평가 (학습되지 않은 모델이므로 약 10% 정도의 정확도가 예상됨)
+    # 정확도 평가
     print("모델 정확도 평가 테스트:")
     accuracy = evaluator.evaluate_accuracy(model)
     

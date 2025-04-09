@@ -1,16 +1,20 @@
 import torch
+import torchvision
+from torchvision import transforms
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 import time
 from tabulate import tabulate
 
-from models.baseline_model import SimpleConvNet
-from models.static_ptq_model import StaticPTQModel
+from models.dynamic_ptq_model import DynamicPTQModel
 from models.custom_quantization_model import CustomQuantization
 from utils.dataset_manager import DatasetManager
 from utils.model_evaluator import ModelEvaluator
 from utils.inference_benchmark import InferenceBenchmark
+from utils.result_analyzer import ResultAnalyzer
 
 class ResultAnalyzer:
     """
@@ -48,34 +52,35 @@ class ResultAnalyzer:
         
         return os.path.join(self.results_dir, 'accuracy_comparison.png')
     
-    def plot_class_accuracy_comparison(self, accuracy_results, classes):
+    def plot_class_accuracy_comparison(self, accuracy_results, classes, top_n=20):
         """
         클래스별 정확도 비교 결과를 시각화하는 함수
+        top_n: 표시할 상위 클래스 수
         """
         model_names = list(accuracy_results.keys())
         
         # 클래스별 정확도 데이터 준비
         class_accuracies = {}
-        for cls in classes:
+        for cls in classes[:top_n]:  # 상위 N개 클래스만 사용
             class_accuracies[cls] = []
             for name in model_names:
                 class_accuracies[cls].append(accuracy_results[name]['class_accuracies'][cls])
         
         # 클래스별 정확도 비교 그래프
-        x = np.arange(len(classes))
+        x = np.arange(len(classes[:top_n]))
         width = 0.25  # 막대 너비
         
         fig, ax = plt.figure(figsize=(14, 8)), plt.axes()
         
         # 각 모델별로 막대 그래프 그리기
         for i, name in enumerate(model_names):
-            accuracies = [accuracy_results[name]['class_accuracies'][cls] for cls in classes]
+            accuracies = [accuracy_results[name]['class_accuracies'][cls] for cls in classes[:top_n]]
             ax.bar(x + i*width - width, accuracies, width, label=name)
         
-        ax.set_title('클래스별 모델 정확도 비교')
+        ax.set_title(f'상위 {top_n}개 클래스별 모델 정확도 비교')
         ax.set_ylabel('정확도 (%)')
         ax.set_xticks(x)
-        ax.set_xticklabels(classes, rotation=45, ha='right')
+        ax.set_xticklabels(classes[:top_n], rotation=45, ha='right')
         ax.set_ylim(0, 100)
         ax.legend()
         ax.grid(axis='y', linestyle='--', alpha=0.7)
@@ -303,82 +308,79 @@ Custom Quantization 방식이 가장 높은 처리량을 달성했으며, 특히
         
         return os.path.join(self.results_dir, 'quantization_comparison_report.md')
 
-def run_experiment():
-    """
-    전체 실험을 실행하는 함수
-    """
-    print("PyTorch 양자화 방식 비교 실험 시작...")
-    
-    # 1. 데이터셋 준비
-    print("\n1. 데이터셋 준비 중...")
+def main():
+    # 데이터셋 로드
     dataset_manager = DatasetManager()
-    train_loader, test_loader, calibration_loader = dataset_manager.get_cifar10_dataset()
+    test_loader = dataset_manager.get_imagenet_dataset()
     
-    # 2. 모델 준비
-    print("\n2. 모델 준비 중...")
+    # 모델 준비
+    print("모델 준비 중...")
     
-    # FP32 모델
-    print("FP32 모델 생성 중...")
-    fp32_model = SimpleConvNet()
+    # 1. Baseline 모델 (ResNet50)
+    baseline_model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V1)
     
-    # 기존 PTQ 모델 (동적 양자화로 변경)
-    print("동적 양자화 모델 생성 중...")
-    ptq_model_manager = StaticPTQModel()
-    ptq_model = ptq_model_manager.quantize()  # 캘리브레이션 데이터 불필요
+    # 2. 일반 양자화 모델 (Dynamic PTQ)
+    ptq_model_manager = DynamicPTQModel()
+    ptq_model = ptq_model_manager.quantize(baseline_model)
     
-    # Custom Quantization 모델 (동적 양자화로 변경)
-    print("커스텀 동적 양자화 모델 생성 중...")
-    custom_quant_manager = CustomQuantization()
-    custom_model = custom_quant_manager.quantize()  # 캘리브레이션 데이터 불필요
+    # 3. 커스텀 양자화 모델
+    custom_quantization = CustomQuantization()
+    custom_quantized_model = custom_quantization.quantize(baseline_model)
     
-    # 모델 사전 생성
-    models = {
-        'FP32 모델': fp32_model,
-        '동적 양자화 모델': ptq_model,
-        '커스텀 동적 양자화 모델': custom_model
+    # 모델 평가
+    print("\n모델 평가 시작...")
+    evaluator = ModelEvaluator(test_loader)
+    
+    # 각 모델의 정확도 평가
+    baseline_accuracy = evaluator.evaluate_accuracy(baseline_model)
+    ptq_accuracy = evaluator.evaluate_accuracy(ptq_model)
+    custom_quantized_accuracy = evaluator.evaluate_accuracy(custom_quantized_model)
+    
+    # 클래스별 정확도 평가
+    baseline_class_acc = evaluator.evaluate_class_accuracy(baseline_model, dataset_manager.classes)
+    ptq_class_acc = evaluator.evaluate_class_accuracy(ptq_model, dataset_manager.classes)
+    custom_class_acc = evaluator.evaluate_class_accuracy(custom_quantized_model, dataset_manager.classes)
+    
+    # 모델 비교
+    models_dict = {
+        'Baseline (ResNet50)': baseline_model,
+        'Dynamic PTQ': ptq_model,
+        'Custom Quantization': custom_quantized_model
     }
     
-    # 3. 모델 크기 측정
-    print("\n3. 모델 크기 측정 중...")
-    model_sizes = {}
+    # 정확도 비교
+    accuracy_results = evaluator.compare_models(models_dict, dataset_manager.classes)
     
-    # FP32 모델 크기
-    torch.save(fp32_model.state_dict(), "temp_fp32.pth")
-    model_sizes['FP32 모델'] = os.path.getsize("temp_fp32.pth") / (1024 * 1024)
-    os.remove("temp_fp32.pth")
-    
-    # PTQ 모델 크기
-    torch.save(ptq_model.state_dict(), "temp_ptq.pth")
-    model_sizes['기존 PTQ 모델'] = os.path.getsize("temp_ptq.pth") / (1024 * 1024)
-    os.remove("temp_ptq.pth")
-    
-    # Custom 모델 크기
-    torch.save(custom_model.state_dict(), "temp_custom.pth")
-    model_sizes['Custom Quantization 모델'] = os.path.getsize("temp_custom.pth") / (1024 * 1024)
-    os.remove("temp_custom.pth")
-    
-    print(f"FP32 모델 크기: {model_sizes['FP32 모델']:.2f} MB")
-    print(f"기존 PTQ 모델 크기: {model_sizes['기존 PTQ 모델']:.2f} MB")
-    print(f"Custom Quantization 모델 크기: {model_sizes['Custom Quantization 모델']:.2f} MB")
-    
-    # 4. 정확도 평가
-    print("\n4. 모델 정확도 평가 중...")
-    evaluator = ModelEvaluator(test_loader)
-    accuracy_results = evaluator.compare_models(models, dataset_manager.classes)
-    
-    # 5. 추론 속도 벤치마크
-    print("\n5. 모델 추론 속도 벤치마크 중...")
+    # 추론 속도 벤치마크
+    print("\n추론 속도 벤치마크 시작...")
     benchmark = InferenceBenchmark(test_loader)
-    benchmark_results = benchmark.compare_models(models)
+    speed_results = benchmark.compare_models(models_dict)
     
-    # 6. 결과 분석 및 시각화
-    #print("\n6. 결과 분석 및 시각화 중...")
-    #analyzer = ResultAnalyzer()
-    #report_path = analyzer.generate_report(accuracy_results, benchmark_results, model_sizes)
+    # 결과 분석 및 시각화
+    print("\n결과 분석 및 시각화...")
+    analyzer = ResultAnalyzer()
     
-    #print(f"\n실험 완료! 결과 보고서가 생성되었습니다: {report_path}")
+    # 정확도 비교 그래프
+    analyzer.plot_accuracy_comparison(accuracy_results)
     
-    return report_path, accuracy_results, benchmark_results, model_sizes
+    # 클래스별 정확도 비교 그래프
+    analyzer.plot_class_accuracy_comparison({
+        'Baseline': baseline_class_acc,
+        'Dynamic PTQ': ptq_class_acc,
+        'Custom Quantization': custom_class_acc
+    }, dataset_manager.classes)
+    
+    # 추론 속도 비교 그래프
+    analyzer.plot_speed_comparison(speed_results)
+    
+    # 모델 크기 비교
+    analyzer.plot_model_size_comparison({
+        'Baseline': baseline_model,
+        'Dynamic PTQ': ptq_model,
+        'Custom Quantization': custom_quantized_model
+    })
+    
+    print("\n모든 평가가 완료되었습니다. 결과는 results 디렉토리에서 확인할 수 있습니다.")
 
 if __name__ == "__main__":
     # 필요한 패키지 설치
@@ -389,5 +391,5 @@ if __name__ == "__main__":
         os.system("pip install tabulate")
         import tabulate
     
-    run_experiment()
+    main()
 

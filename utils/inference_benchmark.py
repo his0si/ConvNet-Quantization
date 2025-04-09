@@ -9,9 +9,7 @@ class InferenceBenchmark:
     """
     def __init__(self, test_loader):
         self.test_loader = test_loader
-        # GPU 환경에서 실행하려면 아래 줄을 수정하세요
-        self.device = torch.device("cpu")  # CPU 기반 벤치마크
-        # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # GPU 사용
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     def warm_up(self, model, num_iterations=10):
         """
@@ -20,13 +18,13 @@ class InferenceBenchmark:
         model.eval()
         model = model.to(self.device)
         
-        # 더미 입력 생성 (CIFAR-10 형식)
-        dummy_input = torch.randn(1, 3, 32, 32, device=self.device)
-        
-        # 워밍업 실행
+        # 실제 데이터로 워밍업
         with torch.no_grad():
-            for _ in range(num_iterations):
-                _ = model(dummy_input)
+            for i, (data, _) in enumerate(self.test_loader):
+                if i >= num_iterations:
+                    break
+                data = data.to(self.device)
+                _ = model(data)
     
     def measure_inference_time(self, model, batch_size=1, num_iterations=100, verbose=True):
         """
@@ -40,31 +38,27 @@ class InferenceBenchmark:
             print("모델 워밍업 중...")
         self.warm_up(model)
         
-        # 단일 이미지 추론 시간 측정
-        dummy_input_single = torch.randn(1, 3, 32, 32, device=self.device)
-        
-        if verbose:
-            print(f"단일 이미지 추론 시간 측정 ({num_iterations}회 반복)...")
-        
+        # 실제 데이터로 추론 시간 측정
         single_times = []
-        with torch.no_grad():
-            for _ in range(num_iterations):
-                start_time = time.time()
-                _ = model(dummy_input_single)
-                end_time = time.time()
-                single_times.append((end_time - start_time) * 1000)  # ms 단위로 변환
-        
-        # 배치 추론 시간 측정
-        dummy_input_batch = torch.randn(batch_size, 3, 32, 32, device=self.device)
-        
-        if verbose:
-            print(f"배치 크기 {batch_size}의 추론 시간 측정 ({num_iterations}회 반복)...")
-        
         batch_times = []
+        
         with torch.no_grad():
-            for _ in range(num_iterations):
+            for i, (data, _) in enumerate(self.test_loader):
+                if i >= num_iterations:
+                    break
+                
+                # 단일 이미지 추론 시간 측정
+                for j in range(data.size(0)):
+                    single_data = data[j:j+1].to(self.device)
+                    start_time = time.time()
+                    _ = model(single_data)
+                    end_time = time.time()
+                    single_times.append((end_time - start_time) * 1000)  # ms 단위로 변환
+                
+                # 배치 추론 시간 측정
+                batch_data = data.to(self.device)
                 start_time = time.time()
-                _ = model(dummy_input_batch)
+                _ = model(batch_data)
                 end_time = time.time()
                 batch_times.append((end_time - start_time) * 1000)  # ms 단위로 변환
         
@@ -87,7 +81,7 @@ class InferenceBenchmark:
             'per_image_in_batch': batch_mean / batch_size
         }
     
-    def measure_throughput(self, model, batch_sizes=[1, 4, 8, 16, 32, 64], verbose=True):
+    def measure_throughput(self, model, batch_sizes=[1, 4, 8, 16, 32, 64], num_iterations=100, verbose=True):
         """
         다양한 배치 크기에서의 처리량(throughput)을 측정하는 함수
         """
@@ -102,20 +96,20 @@ class InferenceBenchmark:
         results = {}
         
         for batch_size in batch_sizes:
-            dummy_input = torch.randn(batch_size, 3, 32, 32, device=self.device)
-            
             if verbose:
                 print(f"배치 크기 {batch_size}의 처리량 측정 중...")
             
             # 측정 시작
             start_time = time.time()
-            num_iterations = 50  # 충분한 반복 횟수
             total_images = 0
             
             with torch.no_grad():
-                for _ in range(num_iterations):
-                    _ = model(dummy_input)
-                    total_images += batch_size
+                for i, (data, _) in enumerate(self.test_loader):
+                    if i >= num_iterations:
+                        break
+                    data = data.to(self.device)
+                    _ = model(data)
+                    total_images += data.size(0)
             
             # 측정 종료
             end_time = time.time()
@@ -169,17 +163,17 @@ class InferenceBenchmark:
 # 테스트 함수
 def test_benchmark():
     from utils.dataset_manager import DatasetManager
-    from models.baseline_model import create_model
+    import torchvision
     
     # 데이터셋 로드
     dataset_manager = DatasetManager()
-    _, test_loader, _ = dataset_manager.get_cifar10_dataset(batch_size=64)
+    test_loader = dataset_manager.get_imagenet_dataset()
     
     # 벤치마크 생성
     benchmark = InferenceBenchmark(test_loader)
     
     # 테스트용 모델 생성
-    model = create_model()
+    model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V1)
     
     # 추론 시간 측정
     print("모델 추론 시간 측정 테스트:")

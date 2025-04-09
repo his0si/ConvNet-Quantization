@@ -1,25 +1,25 @@
 import torch
 import torch.nn as nn
 import torch.quantization
+import torchvision
 import os
-from models.baseline_model import SimpleConvNet
 
-class StaticPTQModel:
+class DynamicPTQModel:
     """
     동적 양자화(Dynamic Quantization)를 구현한 클래스
     """
     def __init__(self):
-        # 원본 FP32 모델 생성
-        self.fp32_model = SimpleConvNet()
-        
-        
-        # 양자화를 위한 모델 준비
+        # 원본 FP32 모델 생성 (ResNet50)
+        self.fp32_model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V1)
         self.quantized_model = None
     
-    def quantize(self, calibration_data_loader=None):
+    def quantize(self, model=None):
         """
         동적 양자화를 수행하는 함수
         """
+        if model is not None:
+            self.fp32_model = model
+            
         # 모델을 평가 모드로 설정
         self.fp32_model.eval()
         
@@ -43,23 +43,15 @@ class StaticPTQModel:
         return size_mb
 
 # 테스트 함수
-def test_static_ptq():
-    import os
-    import torch.utils.data
-    from torchvision import datasets, transforms
+def test_dynamic_ptq():
+    from utils.dataset_manager import DatasetManager
     
-    # 간단한 테스트 데이터셋 생성 (CIFAR-10)
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-    ])
-    
-    # 테스트용 데이터셋 (일부만 사용)
-    test_dataset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=2)
+    # 데이터셋 로드
+    dataset_manager = DatasetManager()
+    test_loader = dataset_manager.get_imagenet_dataset()
     
     # PTQ 모델 생성 및 양자화
-    ptq_model = StaticPTQModel()
+    ptq_model = DynamicPTQModel()
     
     # 양자화 전 모델 크기 확인
     fp32_size = ptq_model.get_model_size(ptq_model.fp32_model)
@@ -75,7 +67,7 @@ def test_static_ptq():
     print(f"압축률: {fp32_size / int8_size:.2f}x")
     
     # 테스트 입력으로 추론 테스트
-    dummy_input = torch.randn(1, 3, 32, 32)
+    dummy_input = torch.randn(1, 3, 224, 224)
     
     # FP32 모델 추론
     ptq_model.fp32_model.eval()
@@ -97,5 +89,4 @@ def test_static_ptq():
     return quantized_model
 
 if __name__ == "__main__":
-    import os
-    test_static_ptq()
+    test_dynamic_ptq()
