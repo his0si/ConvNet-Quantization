@@ -1,2 +1,0 @@
-# quantization
-ResNet quantization
