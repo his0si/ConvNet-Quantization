@@ -29,13 +29,27 @@ class CustomQuantization:
         model = model.cpu()
         model.eval()  # 평가 모드로 설정
         
+        # QuantStub/DeQuantStub 추가 및 스케일 조정
+        quant_stub = torch.quantization.QuantStub()
+        dequant_stub = torch.quantization.DeQuantStub()
+        model = torch.nn.Sequential(
+            quant_stub,
+            model,
+            dequant_stub
+        )
+        
         # 모듈 퓨전 - 레이어별 최적화된 퓨전 전략 적용
         fused_model = self._fuse_modules_optimized(model)
+        
+        # 연산자 최적화: FloatFunctional 사용
+        for name, module in fused_model.named_children():
+            if isinstance(module, nn.ReLU):
+                setattr(fused_model, name, nn.quantized.FloatFunctional())
         
         # 동적 양자화 적용
         quantized_model = torch.quantization.quantize_dynamic(
             fused_model,
-            {nn.Linear, nn.Conv2d},  # 양자화할 레이어 타입
+            {nn.Linear, nn.Conv2d, nn.ReLU},  # 양자화할 레이어 타입 추가
             dtype=torch.qint8  # 양자화 데이터 타입
         )
         

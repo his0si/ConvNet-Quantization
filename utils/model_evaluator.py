@@ -60,6 +60,11 @@ class ModelEvaluator:
         """
         클래스별 정확도를 평가하는 함수
         """
+        if hasattr(model, 'is_custom_quantized') and model.is_custom_quantized:
+            print("Evaluating Custom Quantization Model")
+        else:
+            print("Evaluating Regular Quantization Model")
+        
         model.eval()
         
         # 모델 타입 확인
