@@ -11,6 +11,7 @@ from tabulate import tabulate
 
 from models.dynamic_ptq_model import DynamicPTQModel
 from models.custom_quantization_model import CustomQuantization
+from models.baseline_model import BaselineModel
 from utils.dataset_manager import DatasetManager
 from utils.inference_benchmark import InferenceBenchmark
 from utils.result_analyzer import ResultAnalyzer
@@ -18,14 +19,15 @@ from utils.result_analyzer import ResultAnalyzer
 def main():
     # 데이터셋 로드
     dataset_manager = DatasetManager()
-    test_loader = dataset_manager.get_imagenet_dataset()
+    test_loader = dataset_manager.get_imagenet_dataset(batch_size=64)
     
     # 모델 준비
     print("모델 생성 및 양자화 중...")
     
     # 1. Baseline 모델 (ResNet50)
     print("- Baseline 모델 (ResNet50) 생성 중...")
-    baseline_model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V1)
+    baseline = BaselineModel()
+    baseline_model = baseline.get_model()
     
     # 2. 일반 양자화 모델 (Dynamic PTQ)
     print("- Dynamic PTQ 모델 생성 중...")
@@ -34,8 +36,8 @@ def main():
     
     # 3. 커스텀 양자화 모델
     print("- Custom 양자화 모델 생성 중...")
-    custom_quantization = CustomQuantization()
-    custom_quantized_model = custom_quantization.quantize(baseline_model)
+    custom_quantization = CustomQuantization(baseline_model)
+    custom_quantized_model = custom_quantization.quantize()
     
     print("모델 생성 완료!")
     
@@ -54,28 +56,21 @@ def main():
     # 결과 분석 및 시각화
     print("\n결과 분석 및 시각화...")
     analyzer = ResultAnalyzer()
-    
-    # 정확도 비교 그래프
-    analyzer.plot_accuracy_comparison({
-        'Baseline (ResNet50)': baseline_model.accuracy,
-        'Dynamic PTQ': ptq_model.accuracy,
-        'Custom Quantization': custom_quantized_model.accuracy
-    })
-    
-    # 클래스별 정확도 비교 그래프
-    analyzer.plot_class_accuracy_comparison({
-        'Baseline (ResNet50)': baseline_model.class_accuracy,
-        'Dynamic PTQ': ptq_model.class_accuracy,
-        'Custom Quantization': custom_quantized_model.class_accuracy
-    }, dataset_manager.classes)
-    
-    # 추론 속도 비교 그래프
-    analyzer.plot_speed_comparison(speed_results)
+    analyzer.analyze_results(models_dict, speed_results)
     
     # 모델 크기 비교
-    analyzer.plot_model_size_comparison(models_dict)
+    print("\n모델 크기 비교:")
+    for name, model in models_dict.items():
+        size_mb = custom_quantization.get_model_size(model)
+        print(f"{name}: {size_mb:.2f} MB")
     
-    print("\n모든 평가가 완료되었습니다. 결과는 results 디렉토리에서 확인할 수 있습니다.")
+    # 정확도 평가
+    print("\n정확도 평가:")
+    for name, model in models_dict.items():
+        top1, top5 = dataset_manager.evaluate_model(model)
+        print(f"{name}:")
+        print(f"  Top-1 Accuracy: {top1:.2f}%")
+        print(f"  Top-5 Accuracy: {top5:.2f}%")
 
 if __name__ == "__main__":
     # 필요한 패키지 설치

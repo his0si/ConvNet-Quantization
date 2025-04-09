@@ -4,6 +4,7 @@ import torchvision.transforms as transforms
 import os
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from torchvision import datasets
 
 class DatasetManager:
     """
@@ -18,12 +19,13 @@ class DatasetManager:
         # 데이터셋 디렉토리 생성
         os.makedirs(data_dir, exist_ok=True)
         
-        # Load the ImageNet dataset to get class names
-        try:
-            self.get_imagenet_dataset()
-        except Exception as e:
-            print(f"Error loading ImageNet dataset: {e}")
-            raise
+        # 데이터 전처리 설정
+        self.transform = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
 
     def get_sample_batch(self):
         """
@@ -46,19 +48,11 @@ class DatasetManager:
         ImageNet 데이터셋을 로드하고 데이터 로더를 생성하는 함수
         """
         try:
-            # 데이터 전처리
-            transform = transforms.Compose([
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
-
             # 테스트 데이터셋 로드
             test_dataset = torchvision.datasets.ImageNet(
                 root=self.data_dir,
                 split='val',
-                transform=transform
+                transform=self.transform
             )
 
             # Set the classes attribute
@@ -86,20 +80,64 @@ class DatasetManager:
         model = model.to(self.device)
         model.eval()
         
-        correct1, correct5, total = 0, 0, 0
-        with torch.inference_mode():
+        correct1 = 0
+        correct5 = 0
+        total = 0
+        
+        with torch.no_grad():
             for images, targets in tqdm(self.test_loader, desc="Evaluating"):
                 images = images.to(self.device)
                 targets = targets.to(self.device)
+                
                 outputs = model(images)
-                _, pred_top5 = outputs.topk(5, dim=1, largest=True, sorted=True)
-                correct1 += (pred_top5[:, 0] == targets).sum().item()
-                correct5 += (pred_top5 == targets.unsqueeze(1)).sum().item()
+                _, pred = outputs.topk(5, 1, True, True)
+                pred = pred.t()
+                correct = pred.eq(targets.view(1, -1).expand_as(pred))
+                
+                correct1 += correct[:1].view(-1).float().sum(0).item()
+                correct5 += correct[:5].view(-1).float().sum(0).item()
                 total += targets.size(0)
         
-        top1 = correct1 / total * 100
-        top5 = correct5 / total * 100
+        top1 = 100.0 * correct1 / total
+        top5 = 100.0 * correct5 / total
+        
         return top1, top5
+
+    def get_cifar10_dataset(self, batch_size=64):
+        """
+        CIFAR-10 데이터셋을 로드하는 함수
+        """
+        # CIFAR-10 데이터셋 로드
+        train_dataset = datasets.CIFAR10(
+            root=self.data_dir,
+            train=True,
+            download=True,
+            transform=self.cifar10_transform
+        )
+        
+        test_dataset = datasets.CIFAR10(
+            root=self.data_dir,
+            train=False,
+            download=True,
+            transform=self.cifar10_transform
+        )
+        
+        # 데이터로더 생성
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=2
+        )
+        
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=2
+        )
+        
+        return train_loader, test_loader, test_dataset.classes
 
 def test_dataset():
     try:
