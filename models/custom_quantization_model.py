@@ -12,8 +12,8 @@ class OptimizedQuantizedConv2d(nn.Module):
     """
     def __init__(self, conv):
         super().__init__()
-        self.weight = conv.weight
-        self.bias = conv.bias
+        self.weight = conv.weight.cpu()
+        self.bias = conv.bias.cpu() if conv.bias is not None else None
         self.stride = conv.stride
         self.padding = conv.padding
         self.dilation = conv.dilation
@@ -24,6 +24,8 @@ class OptimizedQuantizedConv2d(nn.Module):
         self.dequant = DeQuantStub()
         
     def forward(self, x):
+        # 입력을 CPU로 이동
+        x = x.cpu()
         x = self.quant(x)
         x = nn.functional.conv2d(
             x, self.weight, self.bias,
@@ -38,14 +40,16 @@ class OptimizedQuantizedLinear(nn.Module):
     """
     def __init__(self, linear):
         super().__init__()
-        self.weight = linear.weight
-        self.bias = linear.bias
+        self.weight = linear.weight.cpu()
+        self.bias = linear.bias.cpu() if linear.bias is not None else None
         
         # 양자화된 연산을 위한 추가 최적화
         self.quant = QuantStub()
         self.dequant = DeQuantStub()
         
     def forward(self, x):
+        # 입력을 CPU로 이동
+        x = x.cpu()
         x = self.quant(x)
         x = nn.functional.linear(x, self.weight, self.bias)
         return self.dequant(x)
@@ -61,8 +65,11 @@ class CustomQuantizedResNet50(nn.Module):
         self.quant = QuantStub()
         self.dequant = DeQuantStub()
         
+        # 원본 모델을 CPU로 이동
+        self.fp32_model = fp32_model.cpu()
+        
         # 원본 모델의 모든 레이어 복사 및 최적화
-        self.model = self._optimize_model(fp32_model)
+        self.model = self._optimize_model(self.fp32_model)
         
         # 레이어별 양자화 설정
         self._setup_qconfig()
@@ -102,6 +109,8 @@ class CustomQuantizedResNet50(nn.Module):
         torch.quantization.prepare(self, inplace=True)
     
     def forward(self, x):
+        # 입력을 CPU로 이동
+        x = x.cpu()
         x = self.quant(x)
         x = self.model(x)
         return self.dequant(x)
@@ -188,7 +197,7 @@ def test_custom_quantization():
     print(f"압축률: {fp32_size / int8_size:.2f}x")
     
     # 테스트 입력으로 추론 테스트
-    dummy_input = torch.randn(1, 3, 224, 224)
+    dummy_input = torch.randn(1, 3, 224, 224).cpu()  # CPU로 이동
     
     # FP32 모델 추론
     custom_quant.fp32_model.eval()
