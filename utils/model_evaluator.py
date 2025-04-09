@@ -68,7 +68,13 @@ class ModelEvaluator:
         model.eval()
         
         # 모델 타입 확인
-        model_type = "양자화 모델" if hasattr(model, 'quantized') else "FP32 모델"
+        if hasattr(model, 'quantized'):
+            if hasattr(model, 'is_custom_quantized') and model.is_custom_quantized:
+                model_type = "커스텀 동적 양자화 모델"
+            else:
+                model_type = "일반 동적 양자화 모델"
+        else:
+            model_type = "FP32 모델"
         
         # 양자화된 모델은 CPU에서 실행
         if hasattr(model, 'quantized'):

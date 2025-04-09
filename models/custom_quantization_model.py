@@ -6,7 +6,7 @@ import os
 
 class CustomQuantization:
     """
-    커스텀 양자화를 구현한 클래스
+    개선된 커스텀 양자화를 구현한 클래스
     """
     def __init__(self):
         # 원본 FP32 모델 생성 (ResNet50)
@@ -23,11 +23,11 @@ class CustomQuantization:
     
     def quantize(self, model):
         """
-        모델에 커스텀 양자화를 적용하는 함수
+        모델에 개선된 커스텀 양자화를 적용하는 함수
         """
         # 모델을 CPU로 이동하고 평가 모드로 설정
         model = model.cpu()
-        model.eval()  # 평가 모드로 설정
+        model.eval()
         
         # QuantStub/DeQuantStub 추가 및 스케일 조정
         quant_stub = torch.quantization.QuantStub()
@@ -38,19 +38,38 @@ class CustomQuantization:
             dequant_stub
         )
         
-        # 모듈 퓨전 - 레이어별 최적화된 퓨전 전략 적용
+        # 양자화 설정 준비
+        model.qconfig = torch.quantization.get_default_qconfig('fbgemm')
+        
+        # 모듈 퓨전 - 최적화된 퓨전 전략 적용
         fused_model = self._fuse_modules_optimized(model)
         
-        # 연산자 최적화: FloatFunctional 사용
+        # 연산자 최적화: FloatFunctional 사용 및 추가 최적화
         for name, module in fused_model.named_children():
             if isinstance(module, nn.ReLU):
                 setattr(fused_model, name, nn.quantized.FloatFunctional())
+            elif isinstance(module, nn.MaxPool2d):
+                # MaxPool2d를 양자화된 버전으로 대체
+                setattr(fused_model, name, nn.quantized.MaxPool2d(
+                    kernel_size=module.kernel_size,
+                    stride=module.stride,
+                    padding=module.padding
+                ))
         
-        # 동적 양자화 적용
-        quantized_model = torch.quantization.quantize_dynamic(
+        # 양자화 준비
+        torch.quantization.prepare(fused_model, inplace=True)
+        
+        # 양자화 적용 - 더 많은 레이어 타입 포함
+        quantized_model = torch.quantization.convert(
             fused_model,
-            {nn.Linear, nn.Conv2d, nn.ReLU},  # 양자화할 레이어 타입 추가
-            dtype=torch.qint8  # 양자화 데이터 타입
+            inplace=False,
+            mapping={
+                nn.Linear: nn.quantized.Linear,
+                nn.Conv2d: nn.quantized.Conv2d,
+                nn.ReLU: nn.quantized.ReLU,
+                nn.MaxPool2d: nn.quantized.MaxPool2d,
+                nn.AdaptiveAvgPool2d: nn.quantized.AdaptiveAvgPool2d
+            }
         )
         
         # 양자화된 모델임을 표시
@@ -61,24 +80,28 @@ class CustomQuantization:
     
     def _fuse_modules_optimized(self, model):
         """
-        모델의 Conv-BN 레이어를 최적화된 방식으로 퓨전하는 함수
+        모델의 레이어를 최적화된 방식으로 퓨전하는 함수
         """
         modules_to_fuse = []
         
-        # 첫 번째 Conv-BN 퓨전
+        # 첫 번째 Conv-BN-ReLU 퓨전
         if hasattr(model, 'conv1') and hasattr(model, 'bn1'):
-            modules_to_fuse.append(['conv1', 'bn1'])
+            modules_to_fuse.append(['conv1', 'bn1', 'relu'])
         
-        # Bottleneck 블록 내 Conv-BN 퓨전
+        # Bottleneck 블록 내 Conv-BN-ReLU 퓨전
         for name, module in model.named_modules():
             if isinstance(module, torchvision.models.resnet.Bottleneck):
                 block_prefix = name
+                # conv1-bn1-relu 퓨전
                 if hasattr(module, 'conv1') and hasattr(module, 'bn1'):
-                    modules_to_fuse.append([f'{block_prefix}.conv1', f'{block_prefix}.bn1'])
+                    modules_to_fuse.append([f'{block_prefix}.conv1', f'{block_prefix}.bn1', f'{block_prefix}.relu'])
+                # conv2-bn2-relu 퓨전
                 if hasattr(module, 'conv2') and hasattr(module, 'bn2'):
-                    modules_to_fuse.append([f'{block_prefix}.conv2', f'{block_prefix}.bn2'])
+                    modules_to_fuse.append([f'{block_prefix}.conv2', f'{block_prefix}.bn2', f'{block_prefix}.relu'])
+                # conv3-bn3 퓨전
                 if hasattr(module, 'conv3') and hasattr(module, 'bn3'):
                     modules_to_fuse.append([f'{block_prefix}.conv3', f'{block_prefix}.bn3'])
+                # downsample 퓨전
                 if module.downsample is not None:
                     modules_to_fuse.append([f'{block_prefix}.downsample.0', f'{block_prefix}.downsample.1'])
         
@@ -111,7 +134,7 @@ def test_custom_quantization():
     print(f"FP32 모델 크기: {fp32_size:.2f} MB")
     
     # 양자화 수행
-    print("커스텀 양자화 수행 중...")
+    print("개선된 커스텀 양자화 수행 중...")
     quantized_model = custom_model.quantize(custom_model.fp32_model)
     
     # 양자화 후 모델 크기 확인
