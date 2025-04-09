@@ -12,26 +12,65 @@ class DynamicPTQModel:
         # 원본 FP32 모델 생성 (ResNet50)
         self.fp32_model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V1)
         self.quantized_model = None
+        
+        # 양자화 백엔드 설정
+        if 'fbgemm' in torch.backends.quantized.supported_engines:
+            torch.backends.quantized.engine = 'fbgemm'
+        elif 'qnnpack' in torch.backends.quantized.supported_engines:
+            torch.backends.quantized.engine = 'qnnpack'
+        else:
+            raise RuntimeError("No supported quantization engine found")
     
-    def quantize(self, model=None):
+    def quantize(self, model):
         """
-        동적 양자화를 수행하는 함수
+        모델에 동적 양자화를 적용하는 함수
         """
-        if model is not None:
-            self.fp32_model = model
-            
-        # 모델을 평가 모드로 설정
-        self.fp32_model.eval()
+        # 모델을 CPU로 이동하고 평가 모드로 설정
+        model = model.cpu()
+        model.eval()  # 평가 모드로 설정
+        
+        # 모듈 퓨전
+        fused_model = self._fuse_modules(model)
         
         # 동적 양자화 적용
-        # 가중치는 정적으로 양자화하고, 활성화는 동적으로 양자화
-        self.quantized_model = torch.quantization.quantize_dynamic(
-            self.fp32_model,  # 양자화할 모델
+        quantized_model = torch.quantization.quantize_dynamic(
+            fused_model,  # 양자화할 모델
             {nn.Linear, nn.Conv2d},  # 양자화할 레이어 타입
             dtype=torch.qint8  # 양자화 데이터 타입
         )
         
-        return self.quantized_model
+        # 양자화된 모델임을 표시
+        quantized_model.quantized = True
+        quantized_model.is_custom_quantized = False
+        
+        return quantized_model
+    
+    def _fuse_modules(self, model):
+        """
+        모델의 Conv-BN 레이어를 퓨전하는 함수
+        """
+        modules_to_fuse = []
+        
+        # 첫 번째 Conv-BN 퓨전
+        if hasattr(model, 'conv1') and hasattr(model, 'bn1'):
+            modules_to_fuse.append(['conv1', 'bn1'])
+        
+        # Bottleneck 블록 내 Conv-BN 퓨전
+        for name, module in model.named_modules():
+            if isinstance(module, torchvision.models.resnet.Bottleneck):
+                block_prefix = name
+                if hasattr(module, 'conv1') and hasattr(module, 'bn1'):
+                    modules_to_fuse.append([f'{block_prefix}.conv1', f'{block_prefix}.bn1'])
+                if hasattr(module, 'conv2') and hasattr(module, 'bn2'):
+                    modules_to_fuse.append([f'{block_prefix}.conv2', f'{block_prefix}.bn2'])
+                if hasattr(module, 'conv3') and hasattr(module, 'bn3'):
+                    modules_to_fuse.append([f'{block_prefix}.conv3', f'{block_prefix}.bn3'])
+                if module.downsample is not None:
+                    modules_to_fuse.append([f'{block_prefix}.downsample.0', f'{block_prefix}.downsample.1'])
+        
+        # 모듈 퓨전 실행
+        fused_model = torch.quantization.fuse_modules(model, modules_to_fuse, inplace=False)
+        return fused_model
     
     def get_model_size(self, model):
         """
@@ -59,7 +98,7 @@ def test_dynamic_ptq():
     
     # 양자화 수행
     print("동적 양자화 수행 중...")
-    quantized_model = ptq_model.quantize()
+    quantized_model = ptq_model.quantize(ptq_model.fp32_model)
     
     # 양자화 후 모델 크기 확인
     int8_size = ptq_model.get_model_size(quantized_model)

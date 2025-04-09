@@ -4,9 +4,9 @@ import torch.quantization
 import torchvision
 import os
 
-class CustomQuantization:
+class OptimizedCustomQuantization:
     """
-    커스텀 양자화를 구현한 클래스
+    최적화된 커스텀 양자화를 구현한 클래스
     """
     def __init__(self):
         # 원본 FP32 모델 생성 (ResNet50)
@@ -23,11 +23,10 @@ class CustomQuantization:
     
     def quantize(self, model):
         """
-        모델에 커스텀 양자화를 적용하는 함수
+        모델에 최적화된 커스텀 양자화를 적용하는 함수
         """
-        # 모델을 CPU로 이동하고 평가 모드로 설정
+        # 모델을 CPU로 이동
         model = model.cpu()
-        model.eval()  # 평가 모드로 설정
         
         # 모듈 퓨전 - 레이어별 최적화된 퓨전 전략 적용
         fused_model = self._fuse_modules_optimized(model)
@@ -41,7 +40,7 @@ class CustomQuantization:
         # 동적 양자화 적용
         quantized_model = torch.quantization.quantize_dynamic(
             fused_model,
-            qconfig_spec=qconfig_dict,
+            qconfig_dict=qconfig_dict,
             dtype=torch.qint8
         )
         
@@ -138,27 +137,27 @@ class CustomQuantization:
         return size_mb
 
 # 테스트 함수
-def test_custom_quantization():
+def test_optimized_custom_quantization():
     from utils.dataset_manager import DatasetManager
     
     # 데이터셋 로드
     dataset_manager = DatasetManager()
     test_loader = dataset_manager.get_imagenet_dataset()
     
-    # 커스텀 양자화 모델 생성 및 양자화
-    custom_model = CustomQuantization()
+    # 최적화된 커스텀 양자화 모델 생성 및 양자화
+    custom_model = OptimizedCustomQuantization()
     
     # 양자화 전 모델 크기 확인
     fp32_size = custom_model.get_model_size(custom_model.fp32_model)
     print(f"FP32 모델 크기: {fp32_size:.2f} MB")
     
     # 양자화 수행
-    print("커스텀 양자화 수행 중...")
+    print("최적화된 커스텀 양자화 수행 중...")
     quantized_model = custom_model.quantize(custom_model.fp32_model)
     
     # 양자화 후 모델 크기 확인
     int8_size = custom_model.get_model_size(quantized_model)
-    print(f"커스텀 양자화 모델 크기: {int8_size:.2f} MB")
+    print(f"최적화된 커스텀 양자화 모델 크기: {int8_size:.2f} MB")
     print(f"압축률: {fp32_size / int8_size:.2f}x")
     
     # 테스트 입력으로 추론 테스트
@@ -184,4 +183,4 @@ def test_custom_quantization():
     return quantized_model
 
 if __name__ == "__main__":
-    test_custom_quantization()
+    test_optimized_custom_quantization() 
