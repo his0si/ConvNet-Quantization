@@ -11,19 +11,33 @@ class InferenceBenchmark:
         self.test_loader = test_loader
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
+    def _move_to_device(self, model, data):
+        """
+        모델과 데이터를 적절한 디바이스로 이동시키는 헬퍼 함수
+        """
+        if hasattr(model, 'quantized') and model.quantized:
+            model = model.cpu()
+            if data is not None:
+                data = data.cpu()
+        else:
+            model = model.to(self.device)
+            if data is not None:
+                data = data.to(self.device)
+        return model, data
+    
     def warm_up(self, model, num_iterations=10):
         """
         모델 워밍업을 위한 함수 (캐시 효과 제거)
         """
         model.eval()
-        model = model.to(self.device)
+        model, _ = self._move_to_device(model, None)
         
         # 실제 데이터로 워밍업
         with torch.no_grad():
             for i, (data, _) in enumerate(self.test_loader):
                 if i >= num_iterations:
                     break
-                data = data.to(self.device)
+                _, data = self._move_to_device(model, data)
                 _ = model(data)
     
     def measure_inference_time(self, model, batch_size=1, num_iterations=100, verbose=True):
@@ -31,7 +45,7 @@ class InferenceBenchmark:
         단일 이미지 및 배치 추론 시간을 측정하는 함수
         """
         model.eval()
-        model = model.to(self.device)
+        model, _ = self._move_to_device(model, None)
         
         # 워밍업
         if verbose:
@@ -49,14 +63,15 @@ class InferenceBenchmark:
                 
                 # 단일 이미지 추론 시간 측정
                 for j in range(data.size(0)):
-                    single_data = data[j:j+1].to(self.device)
+                    single_data = data[j:j+1]
+                    _, single_data = self._move_to_device(model, single_data)
                     start_time = time.time()
                     _ = model(single_data)
                     end_time = time.time()
                     single_times.append((end_time - start_time) * 1000)  # ms 단위로 변환
                 
                 # 배치 추론 시간 측정
-                batch_data = data.to(self.device)
+                _, batch_data = self._move_to_device(model, data)
                 start_time = time.time()
                 _ = model(batch_data)
                 end_time = time.time()
@@ -86,7 +101,7 @@ class InferenceBenchmark:
         다양한 배치 크기에서의 처리량(throughput)을 측정하는 함수
         """
         model.eval()
-        model = model.to(self.device)
+        model, _ = self._move_to_device(model, None)
         
         # 워밍업
         if verbose:
@@ -107,7 +122,7 @@ class InferenceBenchmark:
                 for i, (data, _) in enumerate(self.test_loader):
                     if i >= num_iterations:
                         break
-                    data = data.to(self.device)
+                    _, data = self._move_to_device(model, data)
                     _ = model(data)
                     total_images += data.size(0)
             
