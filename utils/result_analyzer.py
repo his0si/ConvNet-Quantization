@@ -3,12 +3,15 @@ import numpy as np
 import os
 from datetime import datetime
 from models.custom_quantization_model import CustomQuantization
+import torchvision
 
 class ResultAnalyzer:
     def __init__(self, save_dir='results'):
         self.save_dir = save_dir
         os.makedirs(save_dir, exist_ok=True)
-        self.quantization = CustomQuantization()
+        # Load a base model for quantization
+        base_model = torchvision.models.resnet50(pretrained=True)
+        self.quantization = CustomQuantization(base_model)
         
     def analyze_results(self, models_dict, speed_results):
         """
@@ -26,7 +29,12 @@ class ResultAnalyzer:
         # 모델 크기 정보 추가
         models_with_size = {}
         for name, model in models_dict.items():
-            size_mb = self.quantization.get_model_size(model)
+            if name == 'Custom Quantization':
+                # Custom Quantization 모델의 경우 양자화된 모델을 사용
+                quantized_model = self.quantization.quantize()
+                size_mb = self.quantization.get_model_size(quantized_model)
+            else:
+                size_mb = self.quantization.get_model_size(model)
             models_with_size[name] = {
                 'model': model,
                 'size': size_mb

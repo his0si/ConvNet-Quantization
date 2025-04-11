@@ -77,30 +77,38 @@ class DatasetManager:
         """
         모델의 Top-1, Top-5 정확도를 평가하는 함수
         """
-        model = model.to(self.device)
         model.eval()
-        
         correct1 = 0
         correct5 = 0
         total = 0
         
+        # 양자화된 모델인 경우 CPU로 이동
+        is_quantized = any(isinstance(m, (torch.ao.nn.quantized.dynamic.modules.linear.Linear, 
+                                        torch.ao.nn.quantized.modules.conv.Conv2d)) 
+                         for m in model.modules())
+        if is_quantized:
+            model = model.cpu()
+            device = torch.device('cpu')
+        else:
+            device = self.device
+            model = model.to(device)
+        
         with torch.no_grad():
-            for images, targets in tqdm(self.test_loader, desc="Evaluating"):
-                images = images.to(self.device)
-                targets = targets.to(self.device)
+            for images, labels in tqdm(self.test_loader, desc="Evaluating"):
+                images = images.to(device)
+                labels = labels.to(device)
                 
                 outputs = model(images)
-                _, pred = outputs.topk(5, 1, True, True)
-                pred = pred.t()
-                correct = pred.eq(targets.view(1, -1).expand_as(pred))
+                _, predicted = outputs.topk(5, 1, True, True)
+                predicted = predicted.t()
+                correct = predicted.eq(labels.view(1, -1).expand_as(predicted))
                 
-                correct1 += correct[:1].view(-1).float().sum(0).item()
-                correct5 += correct[:5].view(-1).float().sum(0).item()
-                total += targets.size(0)
+                correct1 += correct[:1].reshape(-1).float().sum(0).item()
+                correct5 += correct[:5].reshape(-1).float().sum(0).item()
+                total += labels.size(0)
         
-        top1 = 100.0 * correct1 / total
-        top5 = 100.0 * correct5 / total
-        
+        top1 = 100 * correct1 / total
+        top5 = 100 * correct5 / total
         return top1, top5
 
     def get_cifar10_dataset(self, batch_size=64):

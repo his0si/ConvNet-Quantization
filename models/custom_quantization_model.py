@@ -166,6 +166,7 @@ class CustomQuantization:
 
     def quantize(self):
         self.model = self.model.cpu()
+        self.model.eval()  # 모델을 평가 모드로 전환
         fuse_model(self.model)
         self.quantized_model = CustomQuantizedResNet50(self.model, self.conv1_scale)
         self.quantized_model.qconfig = get_default_qat_qconfig('fbgemm')
