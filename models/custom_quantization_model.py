@@ -3,34 +3,29 @@ import torch.nn as nn
 import torchvision
 from torch.quantization import QuantStub, DeQuantStub, prepare_qat, convert, fuse_modules
 from torch.quantization import get_default_qat_qconfig
+from torch.nn.quantized import FloatFunctional
 import os
 
 # --- Custom Quantization Modules ---
+
 class CustomQuantizedConv2d(nn.Module):
     def __init__(self, conv_layer, custom_scale=None):
         """
         conv_layer: 일반 Conv2d 또는 fused ConvReLU2d 등
-        custom_scale: 입력 scaling 적용 (옵션)
+        custom_scale: 입력 scaling을 적용 (옵션)
         """
         super().__init__()
         self.custom_scale = custom_scale
-        # fused 여부를 저장하는 플래그
-        self.fused = False  
-        self.relu = None
-
-        # 전달받은 conv_layer에서 실제 nn.Conv2d 모듈을 찾습니다.
-        # 만약 fused 모듈이면, 내부의 conv 부분에 접근하려고 시도합니다.
+        self.quant = QuantStub()
+        self.dequant = DeQuantStub()
+        
+        # 전달받은 conv_layer에서 실제 nn.Conv2d 모듈을 찾아 CPU로 이동
+        conv_module = None
         if hasattr(conv_layer, "weight"):
             conv_module = conv_layer
         elif hasattr(conv_layer, "conv"):
-            try:
-                conv_module = conv_layer.conv
-                self.fused = True
-                self.relu = nn.ReLU()
-            except AttributeError:
-                conv_module = conv_layer
+            conv_module = conv_layer.conv
         else:
-            conv_module = None
             for m in conv_layer.modules():
                 if isinstance(m, nn.Conv2d):
                     conv_module = m
@@ -38,33 +33,28 @@ class CustomQuantizedConv2d(nn.Module):
         if conv_module is None:
             raise AttributeError("전달된 conv_layer에서 weight 속성을 찾을 수 없습니다.")
         
-        # conv 모듈의 weight와 bias를 CPU로 이동
         conv_module.weight.data = conv_module.weight.data.cpu()
         if conv_module.bias is not None:
             conv_module.bias.data = conv_module.bias.data.cpu()
-        
-        # 여기서 self.conv는 underlying conv 모듈입니다.
-        # 만약 fused이면, 자식 conv를 사용하고, fused flag를 설정합니다.
-        if self.fused:
-            self.conv = conv_module
-        else:
-            self.conv = conv_layer
+        self.conv = conv_layer
 
     def forward(self, x):
         if x.is_quantized:
             x = x.dequantize()
         if self.custom_scale is not None:
             x = x * self.custom_scale
+        x = self.quant(x)
         x = self.conv(x)
-        if self.fused and self.relu is not None:
-            x = self.relu(x)
+        x = self.dequant(x)
         return x
 
 class CustomQuantizedLinear(nn.Module):
     def __init__(self, linear_layer, custom_scale=None):
         super().__init__()
-        self.custom_scale = custom_scale
         self.linear = linear_layer
+        self.custom_scale = custom_scale
+        self.quant = QuantStub()
+        self.dequant = DeQuantStub()
         self.linear.weight.data = self.linear.weight.data.cpu()
         if self.linear.bias is not None:
             self.linear.bias.data = self.linear.bias.data.cpu()
@@ -74,7 +64,9 @@ class CustomQuantizedLinear(nn.Module):
             x = x.dequantize()
         if self.custom_scale is not None:
             x = x * self.custom_scale
+        x = self.quant(x)
         x = self.linear(x)
+        x = self.dequant(x)
         return x
 
 class CustomQuantizedBottleneck(nn.Module):
@@ -89,6 +81,10 @@ class CustomQuantizedBottleneck(nn.Module):
         self.relu = bottleneck.relu
         self.downsample = bottleneck.downsample
         self.stride = bottleneck.stride
+
+        # 기존에는 FloatFunctional.add()를 사용했으나 덧셈 시 quantization 파라미터 불일치 문제 발생
+        # 안전하게 float 도메인에서 덧셈하도록 변경함.
+        # self.add = FloatFunctional()  # 제거
 
         if self.downsample is not None:
             self.downsample[0] = CustomQuantizedConv2d(self.downsample[0])
@@ -111,8 +107,8 @@ class CustomQuantizedBottleneck(nn.Module):
 
         if self.downsample is not None:
             identity = self.downsample(x)
-        
-        # residual 덧셈은 float 도메인에서 수행
+
+        # 안전한 덧셈: 양자화된 텐서를 float으로 변환하여 더한 후, 그대로 사용
         if out.is_quantized:
             out = out.dequantize()
         if identity.is_quantized:
@@ -124,7 +120,6 @@ class CustomQuantizedBottleneck(nn.Module):
 class CustomQuantizedResNet50(nn.Module):
     def __init__(self, model, conv1_scale=1.0):
         super().__init__()
-        # 최상위에 global QuantStub/DeQuantStub 사용 (모델 전체에 양자화 적용)
         self.quant = QuantStub()
         self.dequant = DeQuantStub()
         model = model.cpu()
@@ -169,25 +164,14 @@ class CustomQuantization:
         self.quantized_model = None
         self.conv1_scale = conv1_scale
 
-    def quantize(self, calibration_loader=None):
+    def quantize(self):
         self.model = self.model.cpu()
-        self.model.eval()
+        self.model.eval()  # 모델을 평가 모드로 전환
         fuse_model(self.model)
         self.quantized_model = CustomQuantizedResNet50(self.model, self.conv1_scale)
         self.quantized_model.qconfig = get_default_qat_qconfig('fbgemm')
 
-        # QAT 준비
         self.quantized_model = prepare_qat(self.quantized_model)
-        
-        # Calibration: dummy forward pass 5회로 observer 업데이트
-        self.quantized_model.train()
-        with torch.no_grad():
-            for _ in range(5):
-                dummy = torch.randn(1, 3, 224, 224)
-                self.quantized_model(dummy)
-        self.quantized_model.eval()
-        
-        # 변환 수행
         self.quantized_model = convert(self.quantized_model)
         self.quantized_model = self.quantized_model.cpu()
         return self.quantized_model
@@ -217,7 +201,7 @@ def test_custom_quantization():
     fuse_model(model)
 
     quantizer = CustomQuantization(model, conv1_scale=2.0)
-    quantized_model = quantizer.quantize(calibration_loader=None)
+    quantized_model = quantizer.quantize()
 
     original_size = quantizer.get_model_size(model)
     quantized_size = quantizer.get_model_size(quantized_model)
