@@ -28,16 +28,19 @@ def main():
     print("- Baseline 모델 (ResNet50) 생성 중...")
     baseline = BaselineModel()
     baseline_model = baseline.get_model()
+    baseline_model = baseline_model.cpu()  # CPU로 이동
     
     # 2. 일반 양자화 모델 (Dynamic PTQ)
     print("- Dynamic PTQ 모델 생성 중...")
     ptq_model_manager = DynamicPTQModel()
     ptq_model = ptq_model_manager.quantize(baseline_model)
+    ptq_model = ptq_model.cpu()  # CPU로 이동
     
     # 3. 커스텀 양자화 모델
     print("- Custom 양자화 모델 생성 중...")
     custom_quantization = CustomQuantization(baseline_model)
     custom_quantized_model = custom_quantization.quantize()
+    custom_quantized_model = custom_quantized_model.cpu()  # CPU로 이동
     
     print("모델 생성 완료!")
     
