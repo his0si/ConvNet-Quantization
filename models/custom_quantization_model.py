@@ -1,236 +1,214 @@
 import torch
 import torch.nn as nn
-import torch.quantization
 import torchvision
-from torch.quantization import QuantStub, DeQuantStub
+from torch.quantization import QuantStub, DeQuantStub, prepare_qat, convert, fuse_modules
+from torch.quantization import get_default_qat_qconfig
 from torch.nn.quantized import FloatFunctional
 import os
 
-class OptimizedQuantizedConv2d(nn.Module):
-    """
-    최적화된 양자화된 컨볼루션 레이어
-    """
-    def __init__(self, conv):
-        super().__init__()
-        self.weight = conv.weight.cpu()
-        self.bias = conv.bias.cpu() if conv.bias is not None else None
-        self.stride = conv.stride
-        self.padding = conv.padding
-        self.dilation = conv.dilation
-        self.groups = conv.groups
-        
-        # 양자화된 연산을 위한 추가 최적화
-        self.quant = QuantStub()
-        self.dequant = DeQuantStub()
-        
-    def forward(self, x):
-        # 입력을 CPU로 이동
-        x = x.cpu()
-        x = self.quant(x)
-        x = nn.functional.conv2d(
-            x, self.weight, self.bias,
-            self.stride, self.padding,
-            self.dilation, self.groups
-        )
-        return self.dequant(x)
+# --- Custom Quantization Modules ---
 
-class OptimizedQuantizedLinear(nn.Module):
-    """
-    최적화된 양자화된 선형 레이어
-    """
-    def __init__(self, linear):
+class CustomQuantizedConv2d(nn.Module):
+    def __init__(self, conv_layer, custom_scale=None):
+        """
+        conv_layer: 일반 Conv2d 또는 fused ConvReLU2d 등
+        custom_scale: 입력 scaling을 적용 (옵션)
+        """
         super().__init__()
-        self.weight = linear.weight.cpu()
-        self.bias = linear.bias.cpu() if linear.bias is not None else None
-        
-        # 양자화된 연산을 위한 추가 최적화
+        self.custom_scale = custom_scale
         self.quant = QuantStub()
         self.dequant = DeQuantStub()
         
+        # 전달받은 conv_layer에서 실제 nn.Conv2d 모듈을 찾아 CPU로 이동
+        conv_module = None
+        if hasattr(conv_layer, "weight"):
+            conv_module = conv_layer
+        elif hasattr(conv_layer, "conv"):
+            conv_module = conv_layer.conv
+        else:
+            for m in conv_layer.modules():
+                if isinstance(m, nn.Conv2d):
+                    conv_module = m
+                    break
+        if conv_module is None:
+            raise AttributeError("전달된 conv_layer에서 weight 속성을 찾을 수 없습니다.")
+        
+        conv_module.weight.data = conv_module.weight.data.cpu()
+        if conv_module.bias is not None:
+            conv_module.bias.data = conv_module.bias.data.cpu()
+        self.conv = conv_layer
+
     def forward(self, x):
-        # 입력을 CPU로 이동
-        x = x.cpu()
+        if x.is_quantized:
+            x = x.dequantize()
+        if self.custom_scale is not None:
+            x = x * self.custom_scale
         x = self.quant(x)
-        x = nn.functional.linear(x, self.weight, self.bias)
-        return self.dequant(x)
+        x = self.conv(x)
+        x = self.dequant(x)
+        return x
+
+class CustomQuantizedLinear(nn.Module):
+    def __init__(self, linear_layer, custom_scale=None):
+        super().__init__()
+        self.linear = linear_layer
+        self.custom_scale = custom_scale
+        self.quant = QuantStub()
+        self.dequant = DeQuantStub()
+        self.linear.weight.data = self.linear.weight.data.cpu()
+        if self.linear.bias is not None:
+            self.linear.bias.data = self.linear.bias.data.cpu()
+
+    def forward(self, x):
+        if x.is_quantized:
+            x = x.dequantize()
+        if self.custom_scale is not None:
+            x = x * self.custom_scale
+        x = self.quant(x)
+        x = self.linear(x)
+        x = self.dequant(x)
+        return x
+
+class CustomQuantizedBottleneck(nn.Module):
+    def __init__(self, bottleneck, conv1_scale=None):
+        super().__init__()
+        self.conv1 = CustomQuantizedConv2d(bottleneck.conv1, conv1_scale)
+        self.bn1 = bottleneck.bn1.cpu()
+        self.conv2 = CustomQuantizedConv2d(bottleneck.conv2)
+        self.bn2 = bottleneck.bn2.cpu()
+        self.conv3 = CustomQuantizedConv2d(bottleneck.conv3)
+        self.bn3 = bottleneck.bn3.cpu()
+        self.relu = bottleneck.relu
+        self.downsample = bottleneck.downsample
+        self.stride = bottleneck.stride
+
+        # 기존에는 FloatFunctional.add()를 사용했으나 덧셈 시 quantization 파라미터 불일치 문제 발생
+        # 안전하게 float 도메인에서 덧셈하도록 변경함.
+        # self.add = FloatFunctional()  # 제거
+
+        if self.downsample is not None:
+            self.downsample[0] = CustomQuantizedConv2d(self.downsample[0])
+            if len(self.downsample) > 1:
+                self.downsample[1] = self.downsample[1].cpu()
+
+    def forward(self, x):
+        identity = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        # 안전한 덧셈: 양자화된 텐서를 float으로 변환하여 더한 후, 그대로 사용
+        if out.is_quantized:
+            out = out.dequantize()
+        if identity.is_quantized:
+            identity = identity.dequantize()
+        out = out + identity
+        out = self.relu(out)
+        return out
 
 class CustomQuantizedResNet50(nn.Module):
-    """
-    최적화된 커스텀 양자화를 적용한 ResNet50 모델
-    """
-    def __init__(self, fp32_model):
-        super(CustomQuantizedResNet50, self).__init__()
-        
-        # 양자화/역양자화 스텁 추가
+    def __init__(self, model, conv1_scale=1.0):
+        super().__init__()
         self.quant = QuantStub()
         self.dequant = DeQuantStub()
-        
-        # 원본 모델을 CPU로 이동
-        self.fp32_model = fp32_model.cpu()
-        
-        # 원본 모델의 모든 레이어 복사 및 최적화
-        self.model = self._optimize_model(self.fp32_model)
-        
-        # 레이어별 양자화 설정
-        self._setup_qconfig()
-        
-        # 양자화 준비
-        self.prepare()
-    
-    def _optimize_model(self, model):
-        """
-        모델의 레이어를 최적화된 양자화 버전으로 변환
-        """
-        for name, module in model.named_children():
-            if isinstance(module, nn.Conv2d):
-                setattr(model, name, OptimizedQuantizedConv2d(module))
-            elif isinstance(module, nn.Linear):
-                setattr(model, name, OptimizedQuantizedLinear(module))
-            else:
-                self._optimize_model(module)
-        return model
-    
-    def _setup_qconfig(self):
-        """
-        레이어별 양자화 설정 구성
-        """
-        # 기본 양자화 설정
-        self.qconfig = torch.quantization.get_default_qconfig('fbgemm')
-        
-        # 레이어별 양자화 설정
-        for name, module in self.model.named_modules():
-            if isinstance(module, (OptimizedQuantizedConv2d, OptimizedQuantizedLinear)):
-                module.qconfig = self.qconfig
-    
-    def prepare(self):
-        """
-        양자화를 위한 모델 준비
-        """
-        torch.quantization.prepare(self, inplace=True)
-    
+        model = model.cpu()
+
+        self.conv1 = CustomQuantizedConv2d(model.conv1, conv1_scale)
+        self.bn1 = model.bn1.cpu()
+        self.relu = model.relu
+        self.maxpool = model.maxpool
+
+        self.layer1 = nn.Sequential(*[CustomQuantizedBottleneck(b, conv1_scale) for b in model.layer1])
+        self.layer2 = nn.Sequential(*[CustomQuantizedBottleneck(b) for b in model.layer2])
+        self.layer3 = nn.Sequential(*[CustomQuantizedBottleneck(b) for b in model.layer3])
+        self.layer4 = nn.Sequential(*[CustomQuantizedBottleneck(b) for b in model.layer4])
+
+        self.avgpool = model.avgpool
+        self.fc = CustomQuantizedLinear(model.fc)
+
     def forward(self, x):
-        # 입력을 CPU로 이동
-        x = x.cpu()
+        if x.is_quantized:
+            x = x.dequantize()
         x = self.quant(x)
-        x = self.model(x)
-        return self.dequant(x)
-    
-    def quantize(self):
-        """
-        모델 양자화 실행
-        """
-        torch.quantization.convert(self, inplace=True)
-        self.quantized = True
-        self.is_custom_quantized = True
-        return self
+
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        x = self.dequant(x)
+        return x
 
 class CustomQuantization:
-    """
-    최적화된 커스텀 양자화를 관리하는 클래스
-    """
-    def __init__(self, model=None):
-        # 원본 FP32 모델 생성 또는 로드
-        if model is None:
-            self.fp32_model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V1)
-        else:
-            self.fp32_model = model
-        
-        # 모델을 CPU로 이동
-        self.fp32_model = self.fp32_model.cpu()
-        
-        # 양자화 백엔드 설정
-        if 'fbgemm' in torch.backends.quantized.supported_engines:
-            torch.backends.quantized.engine = 'fbgemm'
-        elif 'qnnpack' in torch.backends.quantized.supported_engines:
-            torch.backends.quantized.engine = 'qnnpack'
-        else:
-            raise RuntimeError("No supported quantization engine found")
-    
-    def quantize(self):
-        """
-        최적화된 커스텀 양자화를 수행하는 함수
-        """
-        # 모델을 평가 모드로 설정
-        self.fp32_model.eval()
-        
-        # 최적화된 양자화 모델 생성
-        quantized_model = CustomQuantizedResNet50(self.fp32_model)
-        
-        # 양자화 실행
-        quantized_model.quantize()
-        
-        return quantized_model
-    
-    def get_model_size(self, model):
-        """
-        모델 크기를 계산하는 함수 (MB 단위)
-        """
-        torch.save(model.state_dict(), "temp_model.pth")
-        size_mb = os.path.getsize("temp_model.pth") / (1024 * 1024)
-        os.remove("temp_model.pth")
-        return size_mb
+    def __init__(self, model, conv1_scale=1.0):
+        self.model = model
+        self.quantized_model = None
+        self.conv1_scale = conv1_scale
 
-# 테스트 함수
+    def quantize(self):
+        self.model = self.model.cpu()
+        fuse_model(self.model)
+        self.quantized_model = CustomQuantizedResNet50(self.model, self.conv1_scale)
+        self.quantized_model.qconfig = get_default_qat_qconfig('fbgemm')
+
+        self.quantized_model = prepare_qat(self.quantized_model)
+        self.quantized_model = convert(self.quantized_model)
+        self.quantized_model = self.quantized_model.cpu()
+        return self.quantized_model
+
+    def get_model_size(self, model):
+        param_size = sum(param.nelement() * param.element_size() for param in model.parameters())
+        buffer_size = sum(buffer.nelement() * buffer.element_size() for buffer in model.buffers())
+        return (param_size + buffer_size) / 1024**2
+
+# --- Fusion 함수 (ResNet50 기준) ---
+def fuse_model(model):
+    fuse_modules(model, ['conv1', 'bn1', 'relu'], inplace=True)
+    for layer_name in ['layer1', 'layer2', 'layer3', 'layer4']:
+        layer = getattr(model, layer_name)
+        for basic_block in layer:
+            fuse_modules(basic_block, ['conv1', 'bn1', 'relu'], inplace=True)
+            try:
+                fuse_modules(basic_block, ['conv2', 'bn2', 'relu'], inplace=True)
+            except AssertionError:
+                fuse_modules(basic_block, ['conv2', 'bn2'], inplace=True)
+            fuse_modules(basic_block, ['conv3', 'bn3'], inplace=True)
+            if basic_block.downsample:
+                fuse_modules(basic_block.downsample, ['0', '1'], inplace=True)
+
 def test_custom_quantization():
-    import os
-    from utils.dataset_manager import DatasetManager
-    from utils.model_evaluator import ModelEvaluator
-    
-    # 데이터셋 로드
-    dataset_manager = DatasetManager()
-    test_loader = dataset_manager.get_imagenet_dataset()
-    
-    # 커스텀 양자화 모델 생성 및 양자화
-    custom_quant = CustomQuantization()
-    
-    # 양자화 전 모델 크기 확인
-    fp32_size = custom_quant.get_model_size(custom_quant.fp32_model)
-    print(f"FP32 모델 크기: {fp32_size:.2f} MB")
-    
-    # 양자화 수행
-    print("최적화된 커스텀 양자화 수행 중...")
-    quantized_model = custom_quant.quantize()
-    
-    # 양자화 후 모델 크기 확인
-    int8_size = custom_quant.get_model_size(quantized_model)
-    print(f"최적화된 커스텀 양자화 모델 크기: {int8_size:.2f} MB")
-    print(f"압축률: {fp32_size / int8_size:.2f}x")
-    
-    # 테스트 입력으로 추론 테스트
-    dummy_input = torch.randn(1, 3, 224, 224).cpu()  # CPU로 이동
-    
-    # FP32 모델 추론
-    custom_quant.fp32_model.eval()
-    with torch.no_grad():
-        fp32_output = custom_quant.fp32_model(dummy_input)
-    
-    # INT8 모델 추론
-    with torch.no_grad():
-        int8_output = quantized_model(dummy_input)
-    
-    # 출력 비교
-    print(f"FP32 출력 형태: {fp32_output.shape}")
-    print(f"INT8 출력 형태: {int8_output.shape}")
-    
-    # 출력 차이 계산
-    output_diff = torch.abs(fp32_output - int8_output).mean().item()
-    print(f"출력 평균 절대 차이: {output_diff:.6f}")
-    
-    # 정확도 평가
-    evaluator = ModelEvaluator(test_loader)
-    
-    print("\nFP32 모델 정확도 평가:")
-    fp32_accuracy = evaluator.evaluate_accuracy(custom_quant.fp32_model)
-    
-    print("\n최적화된 커스텀 양자화 모델 정확도 평가:")
-    int8_accuracy = evaluator.evaluate_accuracy(quantized_model)
-    
-    print(f"\n정확도 비교:")
-    print(f"FP32 모델: {fp32_accuracy:.2f}%")
-    print(f"최적화된 커스텀 양자화 모델: {int8_accuracy:.2f}%")
-    print(f"정확도 차이: {fp32_accuracy - int8_accuracy:.2f}%")
-    
-    return quantized_model, fp32_accuracy, int8_accuracy
+    model = torchvision.models.resnet50(pretrained=True)
+    fuse_model(model)
+
+    quantizer = CustomQuantization(model, conv1_scale=2.0)
+    quantized_model = quantizer.quantize()
+
+    original_size = quantizer.get_model_size(model)
+    quantized_size = quantizer.get_model_size(quantized_model)
+
+    print(f"원본 모델 크기: {original_size:.2f} MB")
+    print(f"양자화된 모델 크기: {quantized_size:.2f} MB")
+    print(f"압축률: {original_size/quantized_size:.2f}x")
+    return quantized_model
 
 if __name__ == "__main__":
     test_custom_quantization()

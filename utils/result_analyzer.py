@@ -2,11 +2,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 from datetime import datetime
+from models.custom_quantization_model import CustomQuantization
 
 class ResultAnalyzer:
     def __init__(self, save_dir='results'):
         self.save_dir = save_dir
         os.makedirs(save_dir, exist_ok=True)
+        self.quantization = CustomQuantization()
         
     def analyze_results(self, models_dict, speed_results):
         """
@@ -21,23 +23,32 @@ class ResultAnalyzer:
         result_dir = os.path.join(self.save_dir, timestamp)
         os.makedirs(result_dir, exist_ok=True)
         
+        # 모델 크기 정보 추가
+        models_with_size = {}
+        for name, model in models_dict.items():
+            size_mb = self.quantization.get_model_size(model)
+            models_with_size[name] = {
+                'model': model,
+                'size': size_mb
+            }
+        
         # 모델 크기 비교
-        self._plot_model_sizes(models_dict, result_dir)
+        self._plot_model_sizes(models_with_size, result_dir)
         
         # 처리 속도 비교
         self._plot_processing_speed(speed_results, result_dir)
         
         # 결과 요약 파일 생성
-        self._generate_summary(models_dict, speed_results, result_dir)
+        self._generate_summary(models_with_size, speed_results, result_dir)
         
     def _plot_model_sizes(self, models_dict, result_dir):
         """모델 크기 비교 그래프 생성"""
         model_names = []
         sizes = []
         
-        for name, model in models_dict.items():
+        for name, model_info in models_dict.items():
             model_names.append(name)
-            sizes.append(model.get('size', 0))
+            sizes.append(model_info['size'])
         
         plt.figure(figsize=(10, 6))
         bars = plt.bar(model_names, sizes)
@@ -93,8 +104,8 @@ class ResultAnalyzer:
             
             # 모델 크기 요약
             f.write("Model Sizes:\n")
-            for name, model in models_dict.items():
-                f.write(f"{name}: {model.get('size', 0):.2f}MB\n")
+            for name, model_info in models_dict.items():
+                f.write(f"{name}: {model_info['size']:.2f}MB\n")
             f.write("\n")
             
             # 처리 속도 요약
@@ -104,15 +115,15 @@ class ResultAnalyzer:
             f.write("\n")
             
             # 압축률 계산
-            if 'FP32' in models_dict and 'INT8' in models_dict:
-                fp32_size = models_dict['FP32'].get('size', 0)
-                int8_size = models_dict['INT8'].get('size', 0)
-                compression_ratio = fp32_size / int8_size if int8_size > 0 else 0
-                f.write(f"Compression Ratio (FP32/INT8): {compression_ratio:.2f}x\n")
+            baseline_size = models_dict['Baseline (ResNet50)']['size']
+            for name, model_info in models_dict.items():
+                if name != 'Baseline (ResNet50)':
+                    compression_ratio = baseline_size / model_info['size']
+                    f.write(f"Compression Ratio ({name}/Baseline): {compression_ratio:.2f}x\n")
             
             # 속도 향상률 계산
-            if 'FP32' in speed_results and 'INT8' in speed_results:
-                fp32_speed = speed_results['FP32']
-                int8_speed = speed_results['INT8']
-                speedup_ratio = int8_speed / fp32_speed if fp32_speed > 0 else 0
-                f.write(f"Speedup Ratio (INT8/FP32): {speedup_ratio:.2f}x\n") 
+            baseline_speed = speed_results['Baseline (ResNet50)']
+            for name, speed in speed_results.items():
+                if name != 'Baseline (ResNet50)':
+                    speedup_ratio = speed / baseline_speed
+                    f.write(f"Speedup Ratio ({name}/Baseline): {speedup_ratio:.2f}x\n") 
