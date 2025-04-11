@@ -1,25 +1,25 @@
+# custom_quantization.py
 import torch
 import torch.nn as nn
+import torch.quantization
 import torchvision
-from torch.quantization import QuantStub, DeQuantStub, prepare_qat, convert, fuse_modules
-from torch.quantization import get_default_qat_qconfig
-from torch.nn.quantized import FloatFunctional
+from torch.quantization import QuantStub, DeQuantStub, prepare, convert, fuse_modules, get_default_qconfig
 import os
+from models.dynamic_ptq_model import CustomDynamicQuantization
 
 # --- Custom Quantization Modules ---
-
 class CustomQuantizedConv2d(nn.Module):
     def __init__(self, conv_layer, custom_scale=None):
         """
-        conv_layer: 일반 Conv2d 또는 fused ConvReLU2d 등
-        custom_scale: 입력 scaling을 적용 (옵션)
+        conv_layer: 원래의 Conv2d (혹은 fused Conv 모듈)
+        custom_scale: 입력 스케일링 (옵션)
         """
         super().__init__()
         self.custom_scale = custom_scale
         self.quant = QuantStub()
         self.dequant = DeQuantStub()
         
-        # 전달받은 conv_layer에서 실제 nn.Conv2d 모듈을 찾아 CPU로 이동
+        # conv_layer에서 nn.Conv2d 모듈 추출
         conv_module = None
         if hasattr(conv_layer, "weight"):
             conv_module = conv_layer
@@ -82,18 +82,14 @@ class CustomQuantizedBottleneck(nn.Module):
         self.downsample = bottleneck.downsample
         self.stride = bottleneck.stride
 
-        # 기존에는 FloatFunctional.add()를 사용했으나 덧셈 시 quantization 파라미터 불일치 문제 발생
-        # 안전하게 float 도메인에서 덧셈하도록 변경함.
-        # self.add = FloatFunctional()  # 제거
-
         if self.downsample is not None:
+            # downsample의 첫 번째 레이어를 교체
             self.downsample[0] = CustomQuantizedConv2d(self.downsample[0])
             if len(self.downsample) > 1:
                 self.downsample[1] = self.downsample[1].cpu()
 
     def forward(self, x):
         identity = x
-
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.relu(out)
@@ -108,7 +104,7 @@ class CustomQuantizedBottleneck(nn.Module):
         if self.downsample is not None:
             identity = self.downsample(x)
 
-        # 안전한 덧셈: 양자화된 텐서를 float으로 변환하여 더한 후, 그대로 사용
+        # float 도메인에서 덧셈 수행
         if out.is_quantized:
             out = out.dequantize()
         if identity.is_quantized:
@@ -166,20 +162,36 @@ class CustomQuantization:
 
     def quantize(self):
         self.model = self.model.cpu()
-        self.model.eval()  # 모델을 평가 모드로 전환
+        self.model.eval()
         fuse_model(self.model)
+        # Custom wrapper 적용
         self.quantized_model = CustomQuantizedResNet50(self.model, self.conv1_scale)
-        self.quantized_model.qconfig = get_default_qat_qconfig('fbgemm')
-
-        self.quantized_model = prepare_qat(self.quantized_model)
-        self.quantized_model = convert(self.quantized_model)
+        # static quantization qconfig 설정
+        self.quantized_model.qconfig = get_default_qconfig('fbgemm')
+        # 준비: observer 삽입
+        torch.quantization.prepare(self.quantized_model, inplace=True)
+        
+        # 간단한 캘리브레이션 단계 (더미 입력을 여러 배치 통과)
+        self._calibrate(self.quantized_model)
+        
+        # observer 이용해 양자화 파라미터를 결정한 후 변환 수행
+        torch.quantization.convert(self.quantized_model, inplace=True)
         self.quantized_model = self.quantized_model.cpu()
         return self.quantized_model
 
+    def _calibrate(self, model, num_batches=10, batch_size=32):
+        model.eval()
+        with torch.no_grad():
+            for _ in range(num_batches):
+                dummy_input = torch.randn(batch_size, 3, 224, 224)
+                model(dummy_input)
+
     def get_model_size(self, model):
-        param_size = sum(param.nelement() * param.element_size() for param in model.parameters())
-        buffer_size = sum(buffer.nelement() * buffer.element_size() for buffer in model.buffers())
-        return (param_size + buffer_size) / 1024**2
+        # 파일 저장 방식을 이용하여 모델 크기를 측정
+        torch.save(model.state_dict(), "temp_model.pth")
+        size_mb = os.path.getsize("temp_model.pth") / (1024 * 1024)
+        os.remove("temp_model.pth")
+        return size_mb
 
 # --- Fusion 함수 (ResNet50 기준) ---
 def fuse_model(model):
@@ -197,15 +209,17 @@ def fuse_model(model):
                 fuse_modules(basic_block.downsample, ['0', '1'], inplace=True)
 
 def test_custom_quantization():
-    model = torchvision.models.resnet50(pretrained=True)
+    # pretrained=True는 torchvision 0.13 이상에서는 weights 인자 사용 권고
+    model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V1)
     fuse_model(model)
-
+    
     quantizer = CustomQuantization(model, conv1_scale=2.0)
+    print("Custom Quantization 모델 생성 및 양자화 중...")
     quantized_model = quantizer.quantize()
-
+    
+    # 모델 크기는 torch.save로 측정
     original_size = quantizer.get_model_size(model)
     quantized_size = quantizer.get_model_size(quantized_model)
-
     print(f"원본 모델 크기: {original_size:.2f} MB")
     print(f"양자화된 모델 크기: {quantized_size:.2f} MB")
     print(f"압축률: {original_size/quantized_size:.2f}x")
