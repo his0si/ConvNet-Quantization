@@ -217,19 +217,74 @@ def test_model_inference():
 
 class DynamicPTQModel:
     """
-    Wrapper class for CustomDynamicQuantization to maintain compatibility with existing code.
-    This class provides the same interface as other quantization models in the project.
+    동적 양자화(Dynamic Quantization)를 구현한 클래스
     """
-    def __init__(self, model, conv1_scale=1.0):
-        self.quantizer = CustomDynamicQuantization(model, conv1_scale)
+    def __init__(self):
+        self.fp32_model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V1)
         self.quantized_model = None
-
+        
+        if 'fbgemm' in torch.backends.quantized.supported_engines:
+            torch.backends.quantized.engine = 'fbgemm'
+        elif 'qnnpack' in torch.backends.quantized.supported_engines:
+            torch.backends.quantized.engine = 'qnnpack'
+        else:
+            raise RuntimeError("No supported quantization engine found")
+    
     def quantize(self):
-        self.quantized_model = self.quantizer.quantize()
+        """
+        동적 양자화를 수행하는 함수
+        """
+        self.fp32_model = self.fp32_model.cpu()
+        self.fp32_model.eval()
+        
+        # 모듈 퓨전 수행
+        self.fp32_model = torch.quantization.fuse_modules(
+            self.fp32_model,
+            [['conv1', 'bn1', 'relu']],
+            inplace=False
+        )
+        
+        # 동적 양자화 수행
+        self.quantized_model = torch.quantization.quantize_dynamic(
+            self.fp32_model,
+            {torch.nn.Linear, torch.nn.Conv2d},
+            dtype=torch.qint8
+        )
+        
         return self.quantized_model
+    
+    def get_model_size(self):
+        """
+        모델 크기를 계산하는 함수 (MB 단위)
+        """
+        torch.save(self.quantized_model.state_dict(), "temp_model.pth")
+        size_mb = os.path.getsize("temp_model.pth") / (1024 * 1024)
+        os.remove("temp_model.pth")
+        return size_mb
 
-    def get_model_size(self, model):
-        return self.quantizer.get_model_size(model)
+def test_dynamic_ptq():
+    from utils.dataset_manager import DatasetManager
+    
+    # 데이터셋 로드
+    dataset_manager = DatasetManager()
+    test_loader = dataset_manager.get_imagenet_dataset()
+    
+    # 동적 양자화 모델 생성 및 양자화 수행
+    ptq_model = DynamicPTQModel()
+    quantized_model = ptq_model.quantize()
+    
+    # 모델 크기 확인
+    size_mb = ptq_model.get_model_size()
+    print(f"동적 양자화 모델 크기: {size_mb:.2f} MB")
+    
+    # 더미 입력을 통한 추론 테스트
+    dummy_input = torch.randn(1, 3, 224, 224)
+    quantized_model.eval()
+    with torch.no_grad():
+        output = quantized_model(dummy_input)
+    
+    print(f"출력 형태: {output.shape}")
+    return quantized_model
 
 if __name__ == "__main__":
-    test_model_inference()
+    test_dynamic_ptq()

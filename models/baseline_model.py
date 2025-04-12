@@ -32,6 +32,7 @@ class BaselineModel:
 # 테스트 함수
 def test_baseline_model():
     from utils.dataset_manager import DatasetManager
+    from utils.model_evaluator import ModelEvaluator
     
     # 데이터셋 로드 (실제 ImageNet 데이터셋 로드하는 코드)
     dataset_manager = DatasetManager()
@@ -45,13 +46,11 @@ def test_baseline_model():
     size_mb = baseline.get_model_size()
     print(f"Baseline 모델 크기: {size_mb:.2f} MB")
     
-    # 더미 입력을 통한 추론 테스트
-    dummy_input = torch.randn(1, 3, 224, 224)
-    model.eval()
-    with torch.no_grad():
-        output = model(dummy_input)
+    # 모델 정확도 평가
+    evaluator = ModelEvaluator(test_loader)
+    accuracy = evaluator.evaluate_accuracy(model)
+    print(f"Baseline 모델 정확도: {accuracy:.2f}%")
     
-    print(f"출력 형태: {output.shape}")
     return model
 
 if __name__ == "__main__":
