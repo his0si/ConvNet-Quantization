@@ -19,7 +19,8 @@ class ResultAnalyzer:
         """
         결과를 분석하고 시각화하는 함수
         """
-        plt.style.use('seaborn')
+        plt.style.use('default')  # seaborn 대신 default 스타일 사용
+        sns.set_theme()  # seaborn 테마 적용
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         
         # 모델 이름 목록
