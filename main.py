@@ -15,6 +15,7 @@ from models.baseline_model import BaselineModel
 from utils.dataset_manager import DatasetManager
 from utils.inference_benchmark import InferenceBenchmark
 from utils.result_analyzer import ResultAnalyzer
+from utils.model_evaluator import ModelEvaluator
 
 def main():
     # 데이터셋 로드
@@ -28,7 +29,6 @@ def main():
     print("- Baseline 모델 (ResNet50) 생성 중...")
     baseline = BaselineModel()
     baseline_model = baseline.get_model()
-    baseline_model = baseline_model.cpu()  # CPU로 이동
     
     # 2. 일반 양자화 모델 (Dynamic PTQ)
     print("- Dynamic PTQ 모델 생성 중...")
@@ -60,12 +60,31 @@ def main():
     
     # 1. 정확도 평가
     print("\n정확도 평가 중...")
-    for name, model in models_dict.items():
-        print(f"\n{name} 평가 중...")
-        top1, top5 = dataset_manager.evaluate_model(model)
-        results['accuracy'][name] = {'top1': top1, 'top5': top5}
-        print(f"Top-1 Accuracy: {top1:.2f}%")
-        print(f"Top-5 Accuracy: {top5:.2f}%")
+    
+    # Baseline 모델 평가
+    print("\nBaseline (ResNet50) 평가 중...")
+    top1, top5 = baseline.evaluate(test_loader)
+    results['accuracy']['Baseline'] = {'top1': top1, 'top5': top5}
+    
+    # Dynamic PTQ 모델 평가
+    print("\nDynamic PTQ 모델 평가 중...")
+    evaluator = ModelEvaluator(test_loader)
+    top1, top5 = evaluator.evaluate_accuracy(ptq_model)
+    results['accuracy']['Dynamic PTQ'] = {'top1': top1, 'top5': top5}
+    
+    # Custom 양자화 모델 평가
+    print("\nCustom 양자화 모델 평가 중...")
+    top1, top5 = evaluator.evaluate_accuracy(custom_quantized_model)
+    results['accuracy']['Custom Quantization'] = {'top1': top1, 'top5': top5}
+    
+    # 결과 출력
+    print("\n최종 결과:")
+    print("=" * 50)
+    for model_name, acc in results['accuracy'].items():
+        print(f"\n{model_name}:")
+        print(f"Top-1 Accuracy: {acc['top1']:.2f}%")
+        print(f"Top-5 Accuracy: {acc['top5']:.2f}%")
+    print("=" * 50)
     
     # 2. 모델 크기 측정
     print("\n모델 크기 측정 중...")

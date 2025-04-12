@@ -10,51 +10,40 @@ class ModelEvaluator:
     """
     def __init__(self, test_loader):
         self.test_loader = test_loader
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device('cpu')  # 모든 모델을 CPU에서 평가
     
     def evaluate_accuracy(self, model, verbose=True):
         """
         모델의 Top-1, Top-5 정확도를 평가하는 함수
         """
         model.eval()
+        model = model.cpu()  # 모델을 CPU로 이동
         correct1 = 0
         correct5 = 0
         total = 0
         
-        # 양자화된 모델 확인 및 디바이스 설정
-        is_quantized = hasattr(model, 'is_quantized') or any(
-            isinstance(m, (torch.ao.nn.quantized.dynamic.modules.linear.Linear,
-                         torch.ao.nn.quantized.modules.conv.Conv2d))
-            for m in model.modules()
-        )
-        
-        if is_quantized:
-            model = model.cpu()
-            device = torch.device('cpu')
-        else:
-            device = self.device
-            model = model.to(device)
-        
         if verbose:
-            print(f"\n{'Quantized' if is_quantized else 'FP32'} 모델 평가 중...")
+            print(f"\n{'Quantized' if hasattr(model, 'quantized') else 'FP32'} 모델 평가 중... (device: cpu)")
         
         with torch.no_grad():
             for images, labels in tqdm(self.test_loader, desc="Evaluating", disable=not verbose):
-                images = images.to(device)
-                labels = labels.to(device)
+                images = images.cpu()
+                labels = labels.cpu()
                 
                 outputs = model(images)
                 
+                # Top-k 정확도 계산 (k=1, 5)
+                _, pred = outputs.topk(5, 1, True, True)
+                pred = pred.t()
+                correct = pred.eq(labels.view(1, -1).expand_as(pred))
+                
                 # Top-1 정확도
-                _, predicted = torch.max(outputs.data, 1)
-                total += labels.size(0)
-                correct1 += (predicted == labels).sum().item()
+                correct1 += correct[0].sum().item()
                 
                 # Top-5 정확도
-                _, pred5 = outputs.topk(5, 1, True, True)
-                pred5 = pred5.t()
-                correct = pred5.eq(labels.view(1, -1).expand_as(pred5))
-                correct5 += correct.float().sum().item()
+                correct5 += correct.sum().item()
+                
+                total += labels.size(0)
         
         top1_accuracy = 100 * correct1 / total
         top5_accuracy = 100 * correct5 / total
