@@ -60,15 +60,15 @@ def main():
     
     # 1. 정확도 평가
     print("\n정확도 평가 중...")
+    evaluator = ModelEvaluator(test_loader)
     
     # Baseline 모델 평가
     print("\nBaseline (ResNet50) 평가 중...")
-    top1, top5 = baseline.evaluate(test_loader)
+    top1, top5 = evaluator.evaluate_accuracy(baseline_model)
     results['accuracy']['Baseline'] = {'top1': top1, 'top5': top5}
     
     # Dynamic PTQ 모델 평가
     print("\nDynamic PTQ 모델 평가 중...")
-    evaluator = ModelEvaluator(test_loader)
     top1, top5 = evaluator.evaluate_accuracy(ptq_model)
     results['accuracy']['Dynamic PTQ'] = {'top1': top1, 'top5': top5}
     
