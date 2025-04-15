@@ -81,14 +81,18 @@ class ResultAnalyzer:
         }
         
         models = {
-            'FP32': fp32_model,
-            'PTQ': ptq_model,
-            'Proposed': proposed_model
+            'FP32': (fp32_model, 'gpu'),
+            'PTQ': (ptq_model, 'cpu'),
+            'Proposed': (proposed_model, 'cpu')
         }
         
         # 각 모델의 성능 측정
-        for model_name, model in models.items():
-            model = model.to(self.device)
+        for model_name, (model, device_type) in models.items():
+            # 모델을 적절한 디바이스로 이동
+            if device_type == 'gpu':
+                model = model.to(self.device)
+            else:
+                model = model.cpu()
             model.eval()
             
             # 정확도 측정
@@ -99,7 +103,11 @@ class ResultAnalyzer:
             
             with torch.no_grad():
                 for images, labels in test_loader:
-                    images, labels = images.to(self.device), labels.to(self.device)
+                    # 데이터를 적절한 디바이스로 이동
+                    if device_type == 'gpu':
+                        images, labels = images.to(self.device), labels.to(self.device)
+                    else:
+                        images, labels = images.cpu(), labels.cpu()
                     
                     # 추론 시간 측정
                     start_time = torch.cuda.Event(enable_timing=True)
@@ -122,7 +130,12 @@ class ResultAnalyzer:
             results['Top-5 Accuracy'].append(100 * correct_top5 / total)
             
             # 모델 크기 측정
-            model_size = sum(p.numel() * p.element_size() for p in model.parameters()) / (1024 * 1024)
+            if hasattr(model, 'quantized_model'):
+                # 양자화된 모델의 경우
+                model_size = sum(p.numel() * p.element_size() for p in model.quantized_model.parameters()) / (1024 * 1024)
+            else:
+                # 일반 모델의 경우
+                model_size = sum(p.numel() * p.element_size() for p in model.parameters()) / (1024 * 1024)
             results['Model Size (MB)'].append(model_size)
             
             # 처리량 계산 (이미지/초)
