@@ -5,6 +5,8 @@ import torchvision
 from torch.quantization import QuantStub, DeQuantStub, prepare, convert, fuse_modules, get_default_qconfig
 import os
 from models.baseline_model import SimpleConvNet
+from torch.nn.quantized import FloatFunctional
+import torch.nn.functional as F
 
 #############################################
 # Helper: Safe Fusion 함수
@@ -30,61 +32,26 @@ def safe_fuse(module, fuse_list):
 # Custom Quantization Modules
 #############################################
 class CustomQuantizedConv2d(nn.Module):
-    def __init__(self, conv_layer, custom_scale=None):
-        """
-        conv_layer: 원래의 Conv2d (혹은 fused Conv 모듈)
-        custom_scale: 입력 스케일링 (옵션)
-        """
+    def __init__(self, conv_layer):
         super().__init__()
-        self.custom_scale = custom_scale
         self.quant = QuantStub()
         self.dequant = DeQuantStub()
-
-        # conv_layer에서 nn.Conv2d 모듈 추출
-        conv_module = None
-        if hasattr(conv_layer, "weight"):
-            conv_module = conv_layer
-        elif hasattr(conv_layer, "conv"):
-            conv_module = conv_layer.conv
-        else:
-            for m in conv_layer.modules():
-                if isinstance(m, nn.Conv2d):
-                    conv_module = m
-                    break
-        if conv_module is None:
-            raise AttributeError("전달된 conv_layer에서 weight 속성을 찾을 수 없습니다.")
-
-        conv_module.weight.data = conv_module.weight.data.cpu()
-        if conv_module.bias is not None:
-            conv_module.bias.data = conv_module.bias.data.cpu()
         self.conv = conv_layer
 
     def forward(self, x):
-        if x.is_quantized:
-            x = x.dequantize()
-        if self.custom_scale is not None:
-            x = x * self.custom_scale
         x = self.quant(x)
         x = self.conv(x)
         x = self.dequant(x)
         return x
 
 class CustomQuantizedLinear(nn.Module):
-    def __init__(self, linear_layer, custom_scale=None):
+    def __init__(self, linear_layer):
         super().__init__()
-        self.linear = linear_layer
-        self.custom_scale = custom_scale
         self.quant = QuantStub()
         self.dequant = DeQuantStub()
-        self.linear.weight.data = self.linear.weight.data.cpu()
-        if self.linear.bias is not None:
-            self.linear.bias.data = self.linear.bias.data.cpu()
+        self.linear = linear_layer
 
     def forward(self, x):
-        if x.is_quantized:
-            x = x.dequantize()
-        if self.custom_scale is not None:
-            x = x * self.custom_scale
         x = self.quant(x)
         x = self.linear(x)
         x = self.dequant(x)
@@ -93,7 +60,7 @@ class CustomQuantizedLinear(nn.Module):
 class CustomQuantizedBottleneck(nn.Module):
     def __init__(self, bottleneck, conv1_scale=None):
         super().__init__()
-        self.conv1 = CustomQuantizedConv2d(bottleneck.conv1, conv1_scale)
+        self.conv1 = CustomQuantizedConv2d(bottleneck.conv1)
         self.bn1 = bottleneck.bn1.cpu()
         self.conv2 = CustomQuantizedConv2d(bottleneck.conv2)
         self.bn2 = bottleneck.bn2.cpu()
@@ -141,12 +108,12 @@ class CustomQuantizedResNet50(nn.Module):
         self.dequant = DeQuantStub()
         model = model.cpu()
 
-        self.conv1 = CustomQuantizedConv2d(model.conv1, conv1_scale)
+        self.conv1 = CustomQuantizedConv2d(model.conv1)
         self.bn1 = model.bn1.cpu()
         self.relu = model.relu
         self.maxpool = model.maxpool
 
-        self.layer1 = nn.Sequential(*[CustomQuantizedBottleneck(b, conv1_scale) for b in model.layer1])
+        self.layer1 = nn.Sequential(*[CustomQuantizedBottleneck(b) for b in model.layer1])
         self.layer2 = nn.Sequential(*[CustomQuantizedBottleneck(b) for b in model.layer2])
         self.layer3 = nn.Sequential(*[CustomQuantizedBottleneck(b) for b in model.layer3])
         self.layer4 = nn.Sequential(*[CustomQuantizedBottleneck(b) for b in model.layer4])
@@ -183,6 +150,7 @@ class CustomQuantizationModel(nn.Module):
         super(CustomQuantizationModel, self).__init__()
         self.model = SimpleConvNet()
         self.quantized_model = None
+        self.is_custom_quantized = True
         
         # 양자화 엔진 설정
         if 'fbgemm' in torch.backends.quantized.supported_engines:
@@ -208,26 +176,89 @@ class CustomQuantizationModel(nn.Module):
         # 모델을 CPU로 이동
         self.model = self.model.cpu()
         
-        # 양자화 설정
-        self.model.qconfig = torch.quantization.get_default_qconfig('fbgemm')
+        # 모듈 퓨전 수행 - SimpleConvNet의 실제 구조에 맞게 수정
+        self.model = torch.quantization.fuse_modules(
+            self.model,
+            [['conv1', 'bn1'],
+             ['conv2', 'bn2'],
+             ['conv3', 'bn3'],
+             ['conv4', 'bn4'],
+             ['conv5', 'bn5'],
+             ['conv6', 'bn6'],
+             ['fc1', 'bn7']],
+            inplace=False
+        )
         
-        # 양자화 준비
-        torch.quantization.prepare(self.model, inplace=True)
-        
-        # 양자화 적용
-        self.quantized_model = torch.quantization.convert(self.model, inplace=False)
-        
-        # 양자화된 모델을 CPU로 이동
-        self.quantized_model = self.quantized_model.cpu()
+        # 커스텀 양자화 모델 생성
+        self.quantized_model = CustomQuantizedSimpleConvNet(self.model)
         
         return self.quantized_model
     
     def forward(self, x):
         if self.quantized_model is not None:
-            # 입력을 CPU로 이동
-            x = x.cpu()
             return self.quantized_model(x)
         return self.model(x)
+
+class CustomQuantizedSimpleConvNet(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.quant = QuantStub()
+        self.dequant = DeQuantStub()
+        self.is_custom_quantized = True
+        
+        # 컨볼루션 레이어
+        self.conv1 = CustomQuantizedConv2d(model.conv1)
+        self.conv2 = CustomQuantizedConv2d(model.conv2)
+        self.conv3 = CustomQuantizedConv2d(model.conv3)
+        self.conv4 = CustomQuantizedConv2d(model.conv4)
+        self.conv5 = CustomQuantizedConv2d(model.conv5)
+        self.conv6 = CustomQuantizedConv2d(model.conv6)
+        
+        # 완전연결 레이어
+        self.fc1 = CustomQuantizedLinear(model.fc1)
+        self.fc2 = model.fc2  # 마지막 레이어는 양자화하지 않음
+        
+        # 풀링과 드롭아웃
+        self.pool1 = model.pool1
+        self.pool2 = model.pool2
+        self.pool3 = model.pool3
+        self.dropout1 = model.dropout1
+        self.dropout2 = model.dropout2
+        self.dropout3 = model.dropout3
+        self.dropout4 = model.dropout4
+        
+        # FloatFunctional for safe operations
+        self.add_func = FloatFunctional()
+        
+    def forward(self, x):
+        x = self.quant(x)
+        
+        # 첫 번째 블록
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = self.pool1(x)
+        x = self.dropout1(x)
+        
+        # 두 번째 블록
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = self.pool2(x)
+        x = self.dropout2(x)
+        
+        # 세 번째 블록
+        x = F.relu(self.conv5(x))
+        x = F.relu(self.conv6(x))
+        x = self.pool3(x)
+        x = self.dropout3(x)
+        
+        # 완전연결 레이어
+        x = x.view(-1, 256 * 4 * 4)
+        x = F.relu(self.fc1(x))
+        x = self.dropout4(x)
+        x = self.fc2(x)
+        
+        x = self.dequant(x)
+        return x
 
 #############################################
 # Fuse 함수 (ResNet50 기준, safe_fuse 사용)
