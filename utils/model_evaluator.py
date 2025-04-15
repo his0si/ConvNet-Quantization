@@ -10,51 +10,49 @@ class ModelEvaluator:
     """
     def __init__(self, test_loader):
         self.test_loader = test_loader
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device('cpu')  # 모든 모델을 CPU에서 평가
     
     def evaluate_accuracy(self, model, verbose=True):
         """
-        모델의 정확도를 평가하는 함수
+        모델의 Top-1, Top-5 정확도를 평가하는 함수
         """
         model.eval()
-        
-        # 모델 타입 확인
-        if hasattr(model, 'quantized'):
-            if hasattr(model, 'is_custom_quantized') and model.is_custom_quantized:
-                model_type = "커스텀 동적 양자화 모델"
-            else:
-                model_type = "일반 동적 양자화 모델"
-        else:
-            model_type = "FP32 모델"
-        
-        # 양자화된 모델은 CPU에서 실행
-        if hasattr(model, 'quantized'):
-            model = model.cpu()
-            device = torch.device('cpu')
-        else:
-            model = model.to(self.device)
-            device = self.device
-        
-        correct = 0
+        model = model.cpu()  # 모델을 CPU로 이동
+        correct1 = 0
+        correct5 = 0
         total = 0
         
-        with torch.no_grad():
-            for data, target in tqdm(self.test_loader, desc=f"{model_type} 평가 중", disable=not verbose):
-                data, target = data.to(device), target.to(device)
-                
-                # 모델 추론
-                output = model(data)
-                
-                # 예측 결과 계산
-                _, predicted = torch.max(output.data, 1)
-                total += target.size(0)
-                correct += (predicted == target).sum().item()
-        
-        accuracy = 100 * correct / total
         if verbose:
-            print(f'[{model_type}] 정확도: {accuracy:.2f}%')
+            print(f"\n{'Quantized' if hasattr(model, 'quantized') else 'FP32'} 모델 평가 중... (device: cpu)")
         
-        return accuracy
+        with torch.no_grad():
+            for images, labels in tqdm(self.test_loader, desc="Evaluating", disable=not verbose):
+                images = images.cpu()
+                labels = labels.cpu()
+                
+                outputs = model(images)
+                
+                # Top-k 정확도 계산 (k=1, 5)
+                _, pred = outputs.topk(5, 1, True, True)
+                pred = pred.t()
+                correct = pred.eq(labels.view(1, -1).expand_as(pred))
+                
+                # Top-1 정확도
+                correct1 += correct[0].sum().item()
+                
+                # Top-5 정확도
+                correct5 += correct.sum().item()
+                
+                total += labels.size(0)
+        
+        top1_accuracy = 100 * correct1 / total
+        top5_accuracy = 100 * correct5 / total
+        
+        if verbose:
+            print(f"Top-1 Accuracy: {top1_accuracy:.2f}%")
+            print(f"Top-5 Accuracy: {top5_accuracy:.2f}%")
+        
+        return top1_accuracy, top5_accuracy
     
     def evaluate_class_accuracy(self, model, classes, verbose=True):
         """
@@ -216,16 +214,12 @@ def test_evaluator():
     # 평가기 생성
     evaluator = ModelEvaluator(test_loader)
     
-    # 테스트용 모델 생성
+    # 테스트용 모델 생성 (FP32)
     model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V1)
     
     # 정확도 평가
-    print("모델 정확도 평가 테스트:")
-    accuracy = evaluator.evaluate_accuracy(model)
-    
-    # 클래스별 정확도 평가
-    print("\n클래스별 정확도 평가 테스트:")
-    class_accuracies = evaluator.evaluate_class_accuracy(model, dataset_manager.classes)
+    print("\nFP32 모델 정확도 평가:")
+    top1, top5 = evaluator.evaluate_accuracy(model)
     
     return evaluator
 

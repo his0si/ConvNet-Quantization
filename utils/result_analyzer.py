@@ -4,134 +4,77 @@ import os
 from datetime import datetime
 from models.custom_quantization_model import CustomQuantization
 import torchvision
+import torch
+from torchvision import transforms
+import seaborn as sns
 
 class ResultAnalyzer:
-    def __init__(self, save_dir='results'):
-        self.save_dir = save_dir
-        os.makedirs(save_dir, exist_ok=True)
-        # Load a base model for quantization
-        base_model = torchvision.models.resnet50(pretrained=True)
-        self.quantization = CustomQuantization(base_model)
-        
-    def analyze_results(self, models_dict, speed_results):
+    """
+    모델 성능 분석 및 시각화를 위한 클래스
+    """
+    def __init__(self):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    def analyze_and_plot(self, results):
         """
-        모델 결과를 분석하고 시각화하는 메서드
-        
-        Args:
-            models_dict (dict): 모델 정보를 담은 딕셔너리
-            speed_results (dict): 속도 측정 결과를 담은 딕셔너리
+        결과를 분석하고 시각화하는 함수
         """
-        # 결과 저장을 위한 디렉토리 생성
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        result_dir = os.path.join(self.save_dir, timestamp)
-        os.makedirs(result_dir, exist_ok=True)
+        plt.style.use('default')  # seaborn 대신 default 스타일 사용
+        sns.set_theme()  # seaborn 테마 적용
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         
-        # 모델 크기 정보 추가
-        models_with_size = {}
-        for name, model in models_dict.items():
-            if name == 'Custom Quantization':
-                # Custom Quantization 모델의 경우 양자화된 모델을 사용
-                quantized_model = self.quantization.quantize()
-                size_mb = self.quantization.get_model_size(quantized_model)
-            else:
-                size_mb = self.quantization.get_model_size(model)
-            models_with_size[name] = {
-                'model': model,
-                'size': size_mb
-            }
+        # 모델 이름 목록
+        models = list(results['accuracy'].keys())
         
-        # 모델 크기 비교
-        self._plot_model_sizes(models_with_size, result_dir)
+        # 1. 정확도 그래프
+        top1_acc = [results['accuracy'][m]['top1'] for m in models]
+        top5_acc = [results['accuracy'][m]['top5'] for m in models]
         
-        # 처리 속도 비교
-        self._plot_processing_speed(speed_results, result_dir)
+        x = np.arange(len(models))
+        width = 0.35
         
-        # 결과 요약 파일 생성
-        self._generate_summary(models_with_size, speed_results, result_dir)
+        axes[0].bar(x - width/2, top1_acc, width, label='Top-1')
+        axes[0].bar(x + width/2, top5_acc, width, label='Top-5')
+        axes[0].set_ylabel('Accuracy (%)')
+        axes[0].set_title('Model Accuracy')
+        axes[0].set_xticks(x)
+        axes[0].set_xticklabels(models, rotation=45)
+        axes[0].legend()
         
-    def _plot_model_sizes(self, models_dict, result_dir):
-        """모델 크기 비교 그래프 생성"""
-        model_names = []
-        sizes = []
+        # 2. 모델 크기 그래프
+        sizes = [results['model_size'][m] for m in models]
+        axes[1].bar(models, sizes)
+        axes[1].set_ylabel('Model Size (MB)')
+        axes[1].set_title('Model Size Comparison')
+        plt.setp(axes[1].xaxis.get_majorticklabels(), rotation=45)
         
-        for name, model_info in models_dict.items():
-            model_names.append(name)
-            sizes.append(model_info['size'])
-        
-        plt.figure(figsize=(10, 6))
-        bars = plt.bar(model_names, sizes)
-        plt.title('Model Sizes Comparison')
-        plt.xlabel('Model')
-        plt.ylabel('Size (MB)')
-        plt.xticks(rotation=45)
-        
-        # 막대 위에 크기 표시
-        for bar in bars:
-            height = bar.get_height()
-            plt.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.2f}MB',
-                    ha='center', va='bottom')
+        # 3. 추론 속도 그래프
+        speeds = [results['inference_speed'][m] for m in models]
+        axes[2].bar(models, speeds)
+        axes[2].set_ylabel('Throughput (images/sec)')
+        axes[2].set_title('Inference Speed')
+        plt.setp(axes[2].xaxis.get_majorticklabels(), rotation=45)
         
         plt.tight_layout()
-        plt.savefig(os.path.join(result_dir, 'model_sizes.png'))
+        plt.savefig('model_comparison.png')
         plt.close()
-        
-    def _plot_processing_speed(self, speed_results, result_dir):
-        """처리 속도 비교 그래프 생성"""
-        model_names = []
-        speeds = []
-        
-        for name, speed in speed_results.items():
-            model_names.append(name)
-            speeds.append(speed)
-        
-        plt.figure(figsize=(10, 6))
-        bars = plt.bar(model_names, speeds)
-        plt.title('Processing Speed Comparison')
-        plt.xlabel('Model')
-        plt.ylabel('Images/sec')
-        plt.xticks(rotation=45)
-        
-        # 막대 위에 속도 표시
-        for bar in bars:
-            height = bar.get_height()
-            plt.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.2f}',
-                    ha='center', va='bottom')
-        
-        plt.tight_layout()
-        plt.savefig(os.path.join(result_dir, 'processing_speed.png'))
-        plt.close()
-        
-    def _generate_summary(self, models_dict, speed_results, result_dir):
-        """결과 요약 파일 생성"""
-        summary_file = os.path.join(result_dir, 'summary.txt')
-        
-        with open(summary_file, 'w') as f:
-            f.write("=== Model Analysis Summary ===\n\n")
-            
-            # 모델 크기 요약
-            f.write("Model Sizes:\n")
-            for name, model_info in models_dict.items():
-                f.write(f"{name}: {model_info['size']:.2f}MB\n")
-            f.write("\n")
-            
-            # 처리 속도 요약
-            f.write("Processing Speed (images/sec):\n")
-            for name, speed in speed_results.items():
-                f.write(f"{name}: {speed:.2f}\n")
-            f.write("\n")
-            
-            # 압축률 계산
-            baseline_size = models_dict['Baseline (ResNet50)']['size']
-            for name, model_info in models_dict.items():
-                if name != 'Baseline (ResNet50)':
-                    compression_ratio = baseline_size / model_info['size']
-                    f.write(f"Compression Ratio ({name}/Baseline): {compression_ratio:.2f}x\n")
-            
-            # 속도 향상률 계산
-            baseline_speed = speed_results['Baseline (ResNet50)']
-            for name, speed in speed_results.items():
-                if name != 'Baseline (ResNet50)':
-                    speedup_ratio = speed / baseline_speed
-                    f.write(f"Speedup Ratio ({name}/Baseline): {speedup_ratio:.2f}x\n") 
+
+def test_analyzer():
+    from utils.dataset_manager import DatasetManager
+    import torchvision
+    
+    # 데이터셋 매니저 생성
+    dataset_manager = DatasetManager()
+    test_loader = dataset_manager.get_imagenet_dataset()
+    
+    # 테스트용 모델 생성
+    model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V1)
+    
+    # 분석기 생성 및 테스트
+    analyzer = ResultAnalyzer()
+    results = analyzer.compare_models({'ResNet50': model}, dataset_manager)
+    
+    return analyzer
+
+if __name__ == "__main__":
+    test_analyzer() 
