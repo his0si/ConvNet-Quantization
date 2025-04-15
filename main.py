@@ -5,6 +5,7 @@ from models.dynamic_ptq_model import DynamicPTQModel
 from models.custom_quantization_model import CustomQuantizationModel
 from utils.dataset_manager import DatasetManager
 from utils.model_evaluator import ModelEvaluator
+from utils.result_analyzer import ResultAnalyzer
 import os
 
 def load_trained_model(model_path='./trained_model.pth'):
@@ -92,6 +93,18 @@ def main():
         print(f"\n{name}:")
         print(f"Top-1 Accuracy: {top1:.2f}%")
         print(f"Top-5 Accuracy: {top5:.2f}%")
+    
+    # 양자화 방법 비교 분석
+    print("\n=== 양자화 방법 비교 분석 ===")
+    analyzer = ResultAnalyzer()
+    comparison_results = analyzer.compare_quantization_methods(
+        fp32_model=baseline_model,
+        ptq_model=dynamic_ptq_model,
+        proposed_model=custom_quant_model,
+        test_loader=test_loader
+    )
+    
+    print("\n분석 결과가 'quantization_comparison.png'와 'quantization_comparison.csv'에 저장되었습니다.")
 
 if __name__ == "__main__":
     main()
