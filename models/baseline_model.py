@@ -1,84 +1,95 @@
 import torch
 import torch.nn as nn
-import torchvision
-import os
-from tqdm import tqdm
+import torch.nn.functional as F
 
-class BaselineModel:
+class SimpleConvNet(nn.Module):
     """
-    Baseline 모델 (ResNet50)을 관리하는 클래스
+    개선된 CNN 모델
     """
     def __init__(self):
-        # 원본 FP32 모델 생성
-        self.model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V1)
-        self.model.eval()
-        self.model = self.model.cpu()  # CPU로 이동
-    
-    def get_model(self):
-        """
-        모델을 반환하는 함수
-        """
-        return self.model
-    
-    def get_model_size(self):
-        """
-        모델 크기를 계산하는 함수 (MB 단위)
-        """
-        torch.save(self.model.state_dict(), "temp_model.pth")
-        size_mb = os.path.getsize("temp_model.pth") / (1024 * 1024)
-        os.remove("temp_model.pth")
-        return size_mb
-
-    def evaluate(self, test_loader):
-        """
-        모델의 Top-1, Top-5 정확도를 평가하는 함수
-        """
-        self.model.eval()
-        correct1 = 0
-        correct5 = 0
-        total = 0
+        super(SimpleConvNet, self).__init__()
         
-        with torch.no_grad():
-            for images, labels in tqdm(test_loader, desc="Evaluating"):
-                images = images.cpu()
-                labels = labels.cpu()
-                
-                outputs = self.model(images)
-                _, predicted = outputs.topk(5, 1, True, True)
-                predicted = predicted.t()
-                correct = predicted.eq(labels.view(1, -1).expand_as(predicted))
-                
-                correct1 += correct[:1].reshape(-1).float().sum(0).item()
-                correct5 += correct[:5].reshape(-1).float().sum(0).item()
-                total += labels.size(0)
+        # 첫 번째 블록
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.pool1 = nn.MaxPool2d(2, 2)
+        self.dropout1 = nn.Dropout(0.25)
         
-        top1 = 100 * correct1 / total
-        top5 = 100 * correct5 / total
-        return top1, top5
+        # 두 번째 블록
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(128)
+        self.conv4 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.bn4 = nn.BatchNorm2d(128)
+        self.pool2 = nn.MaxPool2d(2, 2)
+        self.dropout2 = nn.Dropout(0.25)
+        
+        # 세 번째 블록
+        self.conv5 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
+        self.bn5 = nn.BatchNorm2d(256)
+        self.conv6 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        self.bn6 = nn.BatchNorm2d(256)
+        self.pool3 = nn.MaxPool2d(2, 2)
+        self.dropout3 = nn.Dropout(0.25)
+        
+        # 완전 연결 레이어
+        self.fc1 = nn.Linear(256 * 4 * 4, 512)
+        self.bn7 = nn.BatchNorm1d(512)
+        self.dropout4 = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(512, 10)
+        
+        # 가중치 초기화
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, x):
+        # 첫 번째 블록
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = self.pool1(x)
+        x = self.dropout1(x)
+        
+        # 두 번째 블록
+        x = F.relu(self.bn3(self.conv3(x)))
+        x = F.relu(self.bn4(self.conv4(x)))
+        x = self.pool2(x)
+        x = self.dropout2(x)
+        
+        # 세 번째 블록
+        x = F.relu(self.bn5(self.conv5(x)))
+        x = F.relu(self.bn6(self.conv6(x)))
+        x = self.pool3(x)
+        x = self.dropout3(x)
+        
+        # 완전 연결 레이어
+        x = x.view(-1, 256 * 4 * 4)
+        x = F.relu(self.bn7(self.fc1(x)))
+        x = self.dropout4(x)
+        x = self.fc2(x)
+        
+        return x
 
-# 테스트 함수
-def test_baseline_model():
-    from utils.dataset_manager import DatasetManager
-    
-    # 데이터셋 로드
-    dataset_manager = DatasetManager()
-    test_loader = dataset_manager.get_imagenet_dataset()
-    
-    # Baseline 모델 생성
-    baseline = BaselineModel()
-    model = baseline.get_model()
-    
-    # 모델 크기 확인
-    size_mb = baseline.get_model_size()
-    print(f"Baseline 모델 크기: {size_mb:.2f} MB")
-    
-    # 모델 정확도 평가
-    top1, top5 = baseline.evaluate(test_loader)
-    print(f"Baseline 모델 정확도:")
-    print(f"Top-1 Accuracy: {top1:.2f}%")
-    print(f"Top-5 Accuracy: {top5:.2f}%")
-    
+def test_model():
+    # 모델 테스트
+    model = SimpleConvNet()
+    x = torch.randn(1, 3, 32, 32)
+    y = model(x)
+    print(f"Input shape: {x.shape}")
+    print(f"Output shape: {y.shape}")
     return model
 
 if __name__ == "__main__":
-    test_baseline_model()
+    test_model()

@@ -220,7 +220,8 @@ class DynamicPTQModel:
     동적 양자화(Dynamic Quantization)를 구현한 클래스
     """
     def __init__(self):
-        self.fp32_model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V1)
+        from models.baseline_model import SimpleConvNet
+        self.fp32_model = SimpleConvNet()
         self.quantized_model = None
         
         if 'fbgemm' in torch.backends.quantized.supported_engines:
@@ -230,6 +231,53 @@ class DynamicPTQModel:
         else:
             raise RuntimeError("No supported quantization engine found")
     
+    def load_state_dict(self, state_dict):
+        """
+        학습된 가중치를 로드하는 함수
+        """
+        self.fp32_model.load_state_dict(state_dict)
+    
+    def eval(self):
+        """
+        평가 모드로 설정
+        """
+        if self.quantized_model is not None:
+            self.quantized_model.eval()
+        else:
+            self.fp32_model.eval()
+        return self
+    
+    def cpu(self):
+        """
+        모델을 CPU로 이동
+        """
+        if self.quantized_model is not None:
+            self.quantized_model = self.quantized_model.cpu()
+        else:
+            self.fp32_model = self.fp32_model.cpu()
+        return self
+    
+    def to(self, device):
+        """
+        모델을 지정된 디바이스로 이동
+        """
+        if self.quantized_model is not None:
+            self.quantized_model = self.quantized_model.to(device)
+        else:
+            self.fp32_model = self.fp32_model.to(device)
+        return self
+    
+    def forward(self, x):
+        """
+        순전파 함수
+        """
+        if self.quantized_model is not None:
+            return self.quantized_model(x)
+        return self.fp32_model(x)
+    
+    def __call__(self, x):
+        return self.forward(x)
+    
     def quantize(self):
         """
         동적 양자화를 수행하는 함수
@@ -237,10 +285,16 @@ class DynamicPTQModel:
         self.fp32_model = self.fp32_model.cpu()
         self.fp32_model.eval()
         
-        # 모듈 퓨전 수행
+        # 모듈 퓨전 수행 - SimpleConvNet의 구조에 맞게 수정
         self.fp32_model = torch.quantization.fuse_modules(
             self.fp32_model,
-            [['conv1', 'bn1', 'relu']],
+            [['conv1', 'bn1'],
+             ['conv2', 'bn2'],
+             ['conv3', 'bn3'],
+             ['conv4', 'bn4'],
+             ['conv5', 'bn5'],
+             ['conv6', 'bn6'],
+             ['fc1', 'bn7']],
             inplace=False
         )
         

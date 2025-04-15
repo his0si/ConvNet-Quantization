@@ -4,6 +4,7 @@ import torch.quantization
 import torchvision
 from torch.quantization import QuantStub, DeQuantStub, prepare, convert, fuse_modules, get_default_qconfig
 import os
+from models.baseline_model import SimpleConvNet
 
 #############################################
 # Helper: Safe Fusion 함수
@@ -174,22 +175,16 @@ class CustomQuantizedResNet50(nn.Module):
         x = self.dequant(x)
         return x
 
-class CustomQuantization:
+class CustomQuantizationModel(nn.Module):
     """
-    커스텀 양자화를 구현한 클래스
-    - 각 레이어별 독립적인 양자화/역양자화
-    - 커스텀 스케일링 지원
-    - CPU 기반 추론 최적화
+    커스텀 양자화를 적용한 모델
     """
-    def __init__(self, model=None, conv1_scale=2.0):
-        if model is None:
-            self.fp32_model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V1)
-        else:
-            self.fp32_model = model
-        self.conv1_scale = conv1_scale
+    def __init__(self):
+        super(CustomQuantizationModel, self).__init__()
+        self.model = SimpleConvNet()
         self.quantized_model = None
         
-        # 양자화 백엔드 설정
+        # 양자화 엔진 설정
         if 'fbgemm' in torch.backends.quantized.supported_engines:
             torch.backends.quantized.engine = 'fbgemm'
         elif 'qnnpack' in torch.backends.quantized.supported_engines:
@@ -197,46 +192,42 @@ class CustomQuantization:
         else:
             raise RuntimeError("No supported quantization engine found")
     
+    def load_state_dict(self, state_dict):
+        """
+        학습된 가중치를 로드하는 함수
+        """
+        self.model.load_state_dict(state_dict)
+    
     def quantize(self):
         """
-        커스텀 양자화를 수행하는 함수
-        1. 모델을 CPU로 이동
-        2. 평가 모드로 설정
-        3. 모듈 퓨전 수행
-        4. 커스텀 양자화 모델 생성
+        모델을 커스텀 양자화하는 함수
         """
-        self.fp32_model = self.fp32_model.cpu()
-        self.fp32_model.eval()
+        # 모델을 평가 모드로 설정
+        self.model.eval()
         
-        # 모듈 퓨전
-        fuse_model(self.fp32_model)
+        # 모델을 CPU로 이동
+        self.model = self.model.cpu()
         
-        # 커스텀 양자화 모델 생성
-        self.quantized_model = CustomQuantizedResNet50(
-            self.fp32_model,
-            conv1_scale=self.conv1_scale
-        )
+        # 양자화 설정
+        self.model.qconfig = torch.quantization.get_default_qconfig('fbgemm')
         
-        # 양자화 모델 속성 설정
-        self.quantized_model.is_quantized = True
-        self.quantized_model.is_custom_quantized = True
+        # 양자화 준비
+        torch.quantization.prepare(self.model, inplace=True)
+        
+        # 양자화 적용
+        self.quantized_model = torch.quantization.convert(self.model, inplace=False)
+        
+        # 양자화된 모델을 CPU로 이동
+        self.quantized_model = self.quantized_model.cpu()
         
         return self.quantized_model
     
-    def get_model_size(self):
-        """
-        모델 크기를 계산하는 함수 (MB 단위)
-        """
-        if self.quantized_model is None:
-            model_to_check = self.fp32_model
-        else:
-            model_to_check = self.quantized_model
-            
-        # 전체 모델을 저장하여 크기 측정
-        torch.save(model_to_check.state_dict(), "temp_model.pth")
-        size_mb = os.path.getsize("temp_model.pth") / (1024 * 1024)
-        os.remove("temp_model.pth")
-        return size_mb
+    def forward(self, x):
+        if self.quantized_model is not None:
+            # 입력을 CPU로 이동
+            x = x.cpu()
+            return self.quantized_model(x)
+        return self.model(x)
 
 #############################################
 # Fuse 함수 (ResNet50 기준, safe_fuse 사용)
@@ -279,28 +270,13 @@ def fuse_model(model):
 # 테스트 함수
 #############################################
 def test_custom_quantization():
-    from utils.dataset_manager import DatasetManager
-    
-    # 데이터셋 로드
-    dataset_manager = DatasetManager()
-    test_loader = dataset_manager.get_imagenet_dataset()
-    
-    # 커스텀 양자화 모델 생성 및 양자화 수행
-    custom_quant = CustomQuantization()
-    quantized_model = custom_quant.quantize()
-    
-    # 모델 크기 확인
-    fp32_size = custom_quant.get_model_size()
-    print(f"커스텀 양자화 모델 크기: {fp32_size:.2f} MB")
-    
-    # 더미 입력을 통한 추론 테스트
-    dummy_input = torch.randn(1, 3, 224, 224)
-    quantized_model.eval()
-    with torch.no_grad():
-        output = quantized_model(dummy_input)
-    
-    print(f"출력 형태: {output.shape}")
-    return quantized_model
+    # 모델 테스트
+    model = CustomQuantizationModel()
+    x = torch.randn(1, 3, 32, 32)
+    y = model(x)
+    print(f"Input shape: {x.shape}")
+    print(f"Output shape: {y.shape}")
+    return model
 
 if __name__ == "__main__":
     test_custom_quantization()
