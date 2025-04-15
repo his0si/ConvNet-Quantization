@@ -4,6 +4,7 @@ import torch.optim as optim
 import time
 import os
 from tqdm import tqdm
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 class ModelTrainer:
     """
@@ -22,13 +23,13 @@ class ModelTrainer:
         self.test_losses = []
         self.test_accuracies = []
     
-    def train(self, epochs=10, lr=0.001, save_path='./trained_model.pth'):
+    def train(self, epochs=100, lr=0.1, save_path='./trained_model.pth'):
         """
         모델 학습 함수
         """
         criterion = nn.CrossEntropyLoss()
-        optimizer = optim.Adam(self.model.parameters(), lr=lr)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=2, factor=0.5, verbose=True)
+        optimizer = optim.SGD(self.model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
+        scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
         
         best_accuracy = 0.0
         
@@ -80,7 +81,7 @@ class ModelTrainer:
             self.test_accuracies.append(test_accuracy)
             
             # 학습률 조정
-            scheduler.step(test_loss)
+            scheduler.step()
             
             print(f"에폭 {epoch+1}/{epochs} - 학습 손실: {train_loss:.4f}, 학습 정확도: {train_accuracy:.2f}%, "
                   f"테스트 손실: {test_loss:.4f}, 테스트 정확도: {test_accuracy:.2f}%")
@@ -89,12 +90,19 @@ class ModelTrainer:
             if test_accuracy > best_accuracy:
                 best_accuracy = test_accuracy
                 print(f"새로운 최고 정확도: {best_accuracy:.2f}% - 모델 저장 중...")
-                torch.save(self.model.state_dict(), save_path)
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': self.model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'best_accuracy': best_accuracy,
+                }, save_path)
         
         print(f"학습 완료 - 최고 테스트 정확도: {best_accuracy:.2f}%")
         
         # 최고 성능 모델 로드
-        self.model.load_state_dict(torch.load(save_path))
+        checkpoint = torch.load(save_path)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model.to(self.device)
         
         return self.model
@@ -142,7 +150,7 @@ def test_trainer():
     
     # 데이터셋 로드
     dataset_manager = DatasetManager()
-    train_loader, test_loader, _ = dataset_manager.get_cifar10_dataset(batch_size=64)
+    train_loader, test_loader, _ = dataset_manager.get_cifar10_dataset(batch_size=128)  # 배치 크기 증가
     
     # 모델 생성
     model = SimpleConvNet()
@@ -151,7 +159,7 @@ def test_trainer():
     trainer = ModelTrainer(model, train_loader, test_loader)
     
     # 모델 학습
-    trained_model = trainer.train(epochs=5, lr=0.001, save_path='./trained_model.pth')
+    trained_model = trainer.train(epochs=100, lr=0.1, save_path='./trained_model.pth')
     
     # 최종 평가
     test_loss, test_accuracy = trainer.evaluate()

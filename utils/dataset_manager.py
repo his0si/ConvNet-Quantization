@@ -27,6 +27,22 @@ class DatasetManager:
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
 
+        # CIFAR-10용 데이터 증강 설정
+        self.cifar10_transform = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(15),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ])
+
+        # CIFAR-10용 테스트 데이터 전처리
+        self.cifar10_test_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ])
+
     def get_sample_batch(self):
         """
         시각화 및 테스트를 위한 샘플 배치를 반환하는 함수
@@ -111,7 +127,7 @@ class DatasetManager:
         top5 = 100 * correct5 / total
         return top1, top5
 
-    def get_cifar10_dataset(self, batch_size=64):
+    def get_cifar10_dataset(self, batch_size=128):
         """
         CIFAR-10 데이터셋을 로드하는 함수
         """
@@ -127,7 +143,7 @@ class DatasetManager:
             root=self.data_dir,
             train=False,
             download=True,
-            transform=self.cifar10_transform
+            transform=self.cifar10_test_transform
         )
         
         # 데이터로더 생성
@@ -135,14 +151,16 @@ class DatasetManager:
             train_dataset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=2
+            num_workers=4,
+            pin_memory=True
         )
         
         test_loader = DataLoader(
             test_dataset,
             batch_size=batch_size,
             shuffle=False,
-            num_workers=2
+            num_workers=4,
+            pin_memory=True
         )
         
         return train_loader, test_loader, test_dataset.classes
