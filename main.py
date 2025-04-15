@@ -1,10 +1,20 @@
 import torch
+<<<<<<< Updated upstream
 import torchvision
 from torchvision import transforms
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
+=======
+import torch.nn as nn
+from models.baseline_model import SimpleConvNet
+from models.dynamic_ptq_model import DynamicPTQModel
+from models.custom_quantization_model import CustomQuantizationModel
+from utils.dataset_manager import DatasetManager
+from utils.model_evaluator import ModelEvaluator
+from utils.result_analyzer import ResultAnalyzer
+>>>>>>> Stashed changes
 import os
 import time
 from tabulate import tabulate
@@ -56,6 +66,7 @@ def main():
     benchmark = InferenceBenchmark(test_loader)
     speed_results = benchmark.compare_models(models_dict)
     
+<<<<<<< Updated upstream
     # 결과 분석 및 시각화
     print("\n결과 분석 및 시각화...")
     analyzer = ResultAnalyzer()
@@ -74,6 +85,26 @@ def main():
         print(f"{name}:")
         print(f"  Top-1 Accuracy: {top1:.2f}%")
         print(f"  Top-5 Accuracy: {top5:.2f}%")
+=======
+    # 결과 출력
+    print("\n=== 최종 결과 ===")
+    for name, (top1, top5) in results.items():
+        print(f"\n{name}:")
+        print(f"Top-1 Accuracy: {top1:.2f}%")
+        print(f"Top-5 Accuracy: {top5:.2f}%")
+    
+    # 양자화 방법 비교 분석
+    print("\n=== 양자화 방법 비교 분석 ===")
+    analyzer = ResultAnalyzer()
+    comparison_results = analyzer.compare_quantization_methods(
+        fp32_model=baseline_model,
+        ptq_model=dynamic_ptq_model,
+        proposed_model=custom_quant_model,
+        test_loader=test_loader
+    )
+    
+    print("\n분석 결과가 'quantization_comparison.png'와 'quantization_comparison.csv'에 저장되었습니다.")
+>>>>>>> Stashed changes
 
 if __name__ == "__main__":
     # 필요한 패키지 설치
