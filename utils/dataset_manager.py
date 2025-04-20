@@ -10,7 +10,7 @@ class DatasetManager:
     """
     평가용 데이터셋을 생성하고 관리하는 클래스
     """
-    def __init__(self, data_dir='./imagenet'):
+    def __init__(self, data_dir='./data'):
         self.data_dir = data_dir
         self.test_loader = None
         self.classes = None
@@ -19,14 +19,6 @@ class DatasetManager:
         # 데이터셋 디렉토리 생성
         os.makedirs(data_dir, exist_ok=True)
         
-        # 데이터 전처리 설정
-        self.transform = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-
         # CIFAR-10용 데이터 증강 설정
         self.cifar10_transform = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
@@ -48,7 +40,7 @@ class DatasetManager:
         시각화 및 테스트를 위한 샘플 배치를 반환하는 함수
         """
         if self.test_loader is None:
-            self.get_imagenet_dataset()
+            _, self.test_loader, _ = self.get_cifar10_dataset()
         
         try:
             # 테스트 데이터에서 첫 번째 배치 가져오기
@@ -57,36 +49,6 @@ class DatasetManager:
             return images, labels
         except Exception as e:
             print(f"Error getting sample batch: {e}")
-            raise
-
-    def get_imagenet_dataset(self, batch_size=32, num_workers=4):
-        """
-        ImageNet 데이터셋을 로드하고 데이터 로더를 생성하는 함수
-        """
-        try:
-            # 테스트 데이터셋 로드
-            test_dataset = torchvision.datasets.ImageNet(
-                root=self.data_dir,
-                split='val',
-                transform=self.transform
-            )
-
-            # Set the classes attribute
-            self.classes = test_dataset.classes
-
-            # 데이터 로더 생성
-            self.test_loader = torch.utils.data.DataLoader(
-                test_dataset,
-                batch_size=batch_size,
-                shuffle=False,
-                num_workers=num_workers,
-                pin_memory=True
-            )
-
-            print(f"테스트 데이터셋 크기: {len(test_dataset)}")
-            return self.test_loader
-        except Exception as e:
-            print(f"Error in get_imagenet_dataset: {e}")
             raise
 
     def evaluate_model(self, model):
@@ -168,13 +130,14 @@ class DatasetManager:
 def test_dataset():
     try:
         dataset_manager = DatasetManager()
-        test_loader = dataset_manager.get_imagenet_dataset()
+        train_loader, test_loader, classes = dataset_manager.get_cifar10_dataset()
         
         # 샘플 배치 가져오기
         images, labels = dataset_manager.get_sample_batch()
         
         print(f"샘플 배치 이미지 형태: {images.shape}")
         print(f"샘플 배치 레이블 형태: {labels.shape}")
+        print(f"클래스 수: {len(classes)}")
         
         return dataset_manager
     except Exception as e:
@@ -183,52 +146,4 @@ def test_dataset():
 
 if __name__ == "__main__":
     test_dataset()
-
-# 데이터셋 경로 및 전처리 설정
-root_dir = './imagenet'
-
-val_transform = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
-    )
-])
-
-# ImageNet Validation Set 로드
-val_dataset = torchvision.datasets.ImageNet(
-    root=root_dir,
-    split='val',
-    transform=val_transform
-)
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4)
-
-# Pretrained ResNet50 모델 로드
-model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V1)
-model.eval()
-model.cuda()  # CUDA 사용 (가능한 경우)
-
-# 평가 함수 정의 (Top-1, Top-5 정확도)
-def evaluate(model, dataloader):
-    correct1, correct5, total = 0, 0, 0
-    with torch.inference_mode():
-        for images, targets in tqdm(dataloader, desc="Evaluating"):
-            images = images.cuda()
-            targets = targets.cuda()
-            outputs = model(images)
-            _, pred_top5 = outputs.topk(5, dim=1, largest=True, sorted=True)
-            correct1 += (pred_top5[:, 0] == targets).sum().item()
-            correct5 += (pred_top5 == targets.unsqueeze(1)).sum().item()
-            total += targets.size(0)
-    top1 = correct1 / total * 100
-    top5 = correct5 / total * 100
-    return top1, top5
-
-# 평가 실행
-top1_acc, top5_acc = evaluate(model, val_loader)
-print(f"\n✅ ResNet50 on ImageNet Val:")
-print(f"Top-1 Accuracy: {top1_acc:.2f}%")
-print(f"Top-5 Accuracy: {top5_acc:.2f}%")
 
