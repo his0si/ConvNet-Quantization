@@ -35,6 +35,22 @@ class DatasetManager:
             transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
         ])
 
+        # CIFAR-100용 데이터 증강 설정
+        self.cifar100_transform = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(15),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
+        ])
+
+        # CIFAR-100용 테스트 데이터 전처리
+        self.cifar100_test_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
+        ])
+
     def get_sample_batch(self):
         """
         시각화 및 테스트를 위한 샘플 배치를 반환하는 함수
@@ -106,6 +122,44 @@ class DatasetManager:
             train=False,
             download=True,
             transform=self.cifar10_test_transform
+        )
+        
+        # 데이터로더 생성
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True
+        )
+        
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=4,
+            pin_memory=True
+        )
+        
+        return train_loader, test_loader, test_dataset.classes
+
+    def get_cifar100_dataset(self, batch_size=128):
+        """
+        CIFAR-100 데이터셋을 로드하는 함수
+        """
+        # CIFAR-100 데이터셋 로드
+        train_dataset = datasets.CIFAR100(
+            root=self.data_dir,
+            train=True,
+            download=True,
+            transform=self.cifar100_transform
+        )
+        
+        test_dataset = datasets.CIFAR100(
+            root=self.data_dir,
+            train=False,
+            download=True,
+            transform=self.cifar100_test_transform
         )
         
         # 데이터로더 생성

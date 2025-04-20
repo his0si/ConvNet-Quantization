@@ -3,7 +3,7 @@ import os
 import argparse
 from models.baseline_model import SimpleConvNet
 from utils.dataset_manager import DatasetManager
-from model_trainer import ModelTrainer
+from train_model import ModelTrainer
 from compare_quantization import apply_quantization_and_compare
 
 def main():
