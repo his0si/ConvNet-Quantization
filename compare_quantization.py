@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from models.baseline_model import SimpleConvNet
 from utils.dataset_manager import DatasetManager
-from model_trainer import ModelTrainer
+from train_model import ModelTrainer
 
 def apply_quantization_and_compare(model_path):
     """
@@ -28,7 +28,7 @@ def apply_quantization_and_compare(model_path):
     
     # Load test dataset
     dataset_manager = DatasetManager()
-    _, test_loader, _ = dataset_manager.get_cifar10_dataset(batch_size=128)
+    _, test_loader, _ = dataset_manager.get_cifar100_dataset(batch_size=128)
     
     # Create results directory if it doesn't exist
     os.makedirs('./results', exist_ok=True)

@@ -251,8 +251,8 @@ class CustomQuantizedSimpleConvNet(nn.Module):
         x = self.pool3(x)
         x = self.dropout3(x)
         
-        # 완전연결 레이어
-        x = x.view(-1, 256 * 4 * 4)
+        # 완전 연결 레이어
+        x = x.view(-1, 512 * 4 * 4)
         x = F.relu(self.fc1(x))
         x = self.dropout4(x)
         x = self.fc2(x)

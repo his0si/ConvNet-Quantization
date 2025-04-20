@@ -4,6 +4,8 @@ import torch.optim as optim
 import time
 import os
 from tqdm import tqdm
+from models.baseline_model import SimpleConvNet
+from utils.dataset_manager import DatasetManager
 
 class ModelTrainer:
     """
@@ -135,14 +137,13 @@ class ModelTrainer:
         
         return test_loss, test_accuracy
 
-# 테스트 함수
-def test_trainer():
-    from models.baseline_model import SimpleConvNet
-    from utils.dataset_manager import DatasetManager
-    
+def train_and_save_model():
+    """
+    모델을 학습하고 저장하는 함수
+    """
     # 데이터셋 로드
     dataset_manager = DatasetManager()
-    train_loader, test_loader, _ = dataset_manager.get_cifar10_dataset(batch_size=64)
+    train_loader, test_loader, _ = dataset_manager.get_cifar100_dataset(batch_size=64)
     
     # 모델 생성
     model = SimpleConvNet()
@@ -151,7 +152,7 @@ def test_trainer():
     trainer = ModelTrainer(model, train_loader, test_loader)
     
     # 모델 학습
-    trained_model = trainer.train(epochs=5, lr=0.001, save_path='./trained_model.pth')
+    trained_model = trainer.train(epochs=100, lr=0.001, save_path='./trained_model.pth')
     
     # 최종 평가
     test_loss, test_accuracy = trainer.evaluate()
@@ -160,5 +161,5 @@ def test_trainer():
     return trained_model
 
 if __name__ == "__main__":
-    test_trainer()
+    train_and_save_model()
 

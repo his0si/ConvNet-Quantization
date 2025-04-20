@@ -18,12 +18,15 @@ def load_trained_model(model_path='./trained_model.pth'):
     # 모델 생성
     model = SimpleConvNet()
     
-    # 체크포인트 로드
-    checkpoint = torch.load(model_path)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    # 체크포인트 로드 (CPU에서 로드)
+    checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
+    
+    # 체크포인트가 이미 state_dict 형태이므로 직접 로드
+    model.load_state_dict(checkpoint)
     
     print(f"학습된 모델을 {model_path}에서 로드했습니다.")
-    print(f"최고 정확도: {checkpoint['best_accuracy']:.2f}%")
+    if 'best_accuracy' in checkpoint:
+        print(f"최고 정확도: {checkpoint['best_accuracy']:.2f}%")
     
     return model
 
@@ -70,7 +73,7 @@ def evaluate_models(models, test_loader):
 def main():
     # 데이터셋 로드
     dataset_manager = DatasetManager()
-    train_loader, test_loader, classes = dataset_manager.get_cifar10_dataset(batch_size=128)
+    train_loader, test_loader, classes = dataset_manager.get_cifar100_dataset(batch_size=128)
     
     # 학습된 모델 로드
     trained_model = load_trained_model()
